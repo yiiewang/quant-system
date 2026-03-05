@@ -35,13 +35,17 @@ env/
 *.swo
 *~
 
-# 项目数据
-data/
-logs/
-output/
+# 项目数据（仅忽略仓库根目录运行产物）
+/data/
+/logs/
+/output/
 *.db
 *.sqlite
 *.sqlite3
+
+# 明确保留源码目录
+!/src/data/
+!/src/data/**
 
 # 配置（包含敏感信息）
 .env
@@ -59,3 +63,7 @@ htmlcov/
 *.tmp
 .DS_Store
 Thumbs.db
+
+# src/data 下仍忽略编译产物
+/src/data/__pycache__/
+/src/data/*.py[cod]
