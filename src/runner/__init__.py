@@ -8,14 +8,8 @@ Runner 是框架层的执行器，职责:
 3. 初始化数据服务、通知服务等框架组件
 4. 驱动策略执行并输出结果
 """
-from .base import BaseRunner
-from .analyze import AnalyzeRunner
-from .monitor import MonitorRunner
-from .backtest import BacktestRunner
+from .application import ApplicationRunner
 
 __all__ = [
-    'BaseRunner',
-    'AnalyzeRunner',
-    'MonitorRunner',
-    'BacktestRunner',
+    'ApplicationRunner',
 ]

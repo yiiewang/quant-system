@@ -203,25 +203,15 @@ def strategy_cmd(ctx, config_paths, sys_config_path, mode, symbols, start_date,
                 click.echo(f"    参数: {config.strategy.params}")
             return
         
-        # 选择 Runner
-        from src.runner.analyze import AnalyzeRunner
-        from src.runner.monitor import MonitorRunner
-        from src.runner.backtest import BacktestRunner
-        
-        runner_map = {
-            'analyze': AnalyzeRunner,
-            'monitor': MonitorRunner,
-            'backtest': BacktestRunner,
-        }
-        
-        runner_cls = runner_map[mode]
+        # 选择运行模式
+        from src.runner.application import ApplicationRunner
         
         # 执行所有策略
         if len(tasks) == 1:
             # 单策略：直接运行
             _, config, params = tasks[0]
-            runner = runner_cls(config=config, params=params)
-            runner.run()
+            runner = ApplicationRunner(config=config, params=params)
+            runner.start(mode)
         else:
             # 多策略：依次运行（后续可扩展为并发）
             click.echo(f"\n{'=' * 60}")
@@ -234,8 +224,8 @@ def strategy_cmd(ctx, config_paths, sys_config_path, mode, symbols, start_date,
                 click.echo(f"{'─' * 60}")
                 
                 try:
-                    runner = runner_cls(config=config, params=params)
-                    runner.run()
+                    runner = ApplicationRunner(config=config, params=params)
+                    runner.start(mode)
                 except Exception as e:
                     click.echo(f"策略 {config.strategy.name} 执行失败: {e}", err=True)
                     if ctx.obj.get('verbose'):
@@ -271,9 +261,8 @@ def run(ctx, config_path, symbols, mode, dry_run):
     click.echo("=" * 50)
     
     try:
-        from src.config.loader import load_config
-        from src.core.engine import TradingEngine
-        from src.core.models import EngineConfig
+        from src.config.loader import load_config, RunParams
+        from src.runner.application import ApplicationRunner
         
         # 加载配置文件
         config = load_config(config_path)
@@ -283,34 +272,27 @@ def run(ctx, config_path, symbols, mode, dry_run):
         if symbols:
             symbol_list = [s.strip() for s in symbols.split(',')]
         else:
-            yaml_symbols = config.get_raw('engine', 'symbols', default=[])
-            symbol_list = yaml_symbols if yaml_symbols else ['000001.SZ']
+            symbol_list = config.strategy.symbols if hasattr(config.strategy, 'symbols') else ['000001.SZ']
         
         click.echo(f"交易标的: {symbol_list}")
-        
-        # 映射模式名称
-        mode_map = {'simulation': 'paper', 'paper': 'paper', 'live': 'live'}
-        engine_mode = mode_map.get(mode, 'paper')
         click.echo(f"交易模式: {mode}")
         
         if dry_run:
             click.echo("[试运行模式] 不执行实际交易")
             return
         
-        # 创建 EngineConfig
-        engine_config = EngineConfig(
+        # 构建运行参数
+        params = RunParams(
+            mode=mode,
             symbols=symbol_list,
-            strategy_name=config.get_raw('strategy', 'name', default='macd'),
-            mode=engine_mode,
-            initial_capital=config.get_raw('broker', 'initial_capital', default=100000),
-            poll_interval=config.get_raw('engine', 'tick_interval', default=60),
+            verbose=ctx.obj.get('verbose', False),
         )
         
-        # 初始化交易引擎
-        engine = TradingEngine(engine_config)
+        # 创建运行器
+        runner = ApplicationRunner(config=config, params=params)
         
         click.echo("\n启动交易引擎...")
-        engine.start()
+        runner.start(mode)
         
     except ImportError as e:
         click.echo(f"模块导入失败: {e}", err=True)
@@ -345,53 +327,35 @@ def run(ctx, config_path, symbols, mode, dry_run):
 @click.pass_context
 def backtest(ctx, start_date, end_date, symbols, initial_capital, output_dir, config_path, strategy_name):
     """运行历史回测"""
-    click.echo("=" * 50)
-    click.echo("历史回测")
-    click.echo("=" * 50)
-    
     try:
-        # 解析日期
-        start = datetime.strptime(start_date, '%Y-%m-%d')
-        end = datetime.strptime(end_date, '%Y-%m-%d')
-        symbol_list = [s.strip() for s in symbols.split(',')]
+        from src.config.loader import load_config, RunParams
+        from src.runner.application import ApplicationRunner
         
+        click.echo("=" * 50)
+        click.echo("历史回测")
+        click.echo("=" * 50)
         click.echo(f"回测区间: {start_date} ~ {end_date}")
-        click.echo(f"回测标的: {symbol_list}")
+        click.echo(f"回测标的: {symbols}")
         click.echo(f"初始资金: {initial_capital:,.0f}")
         click.echo(f"策略类型: {strategy_name}")
         
-        from src.config.loader import load_config
-        from src.backtest.engine import BacktestEngine
-        from src.strategy.macd import MACDStrategy
-        from src.strategy.macd_multi_timeframe import MultiTimeframeMACDStrategy
-        from src.strategy.macd_weekly import WeeklyMACDStrategy
-        
         # 加载配置
         config = load_config(config_path)
+        config.strategy.name = strategy_name
         
-        # 根据策略类型初始化策略
-        strategy_params = config.strategy.params if hasattr(config, 'strategy') else {}
-        
-        if strategy_name == 'multi_timeframe':
-            click.echo("使用多周期共振 MACD 策略")
-            click.echo("   - 月线金叉 + 周线金叉 + 日线金叉信号")
-            strategy = MultiTimeframeMACDStrategy(params=strategy_params)
-        elif strategy_name == 'weekly':
-            click.echo("使用周线级别 MACD 策略")
-            click.echo("   - 只在周线级别交易，捕捉中期趋势")
-            strategy = WeeklyMACDStrategy(params=strategy_params)
-        else:
-            click.echo("使用标准 MACD 策略")
-            strategy = MACDStrategy(params=strategy_params)
-        
-        # 初始化回测引擎
-        engine = BacktestEngine(
-            strategy=strategy,
-            symbols=symbol_list,
-            start_date=start,
-            end_date=end,
-            initial_capital=initial_capital
+        # 构建运行参数
+        params = RunParams(
+            mode='backtest',
+            symbols=[s.strip() for s in symbols.split(',')],
+            start_date=start_date,
+            end_date=end_date,
+            initial_capital=initial_capital,
+            output_dir=output_dir,
+            verbose=ctx.obj.get('verbose', False),
         )
+        
+        # 创建运行器
+        runner = ApplicationRunner(config=config, params=params)
         
         # 进度条
         import logging
@@ -413,7 +377,8 @@ def backtest(ctx, start_date, end_date, symbols, initial_capital, output_dir, co
                         bar.update(delta)
                         last_progress = int(progress)
                 
-                result = engine.run(progress_callback=progress_callback)
+                # 传递进度回调
+                result = runner.start('backtest', progress_callback)
                 bar.update(100 - last_progress)
         finally:
             for handler, level in original_levels.items():
@@ -434,24 +399,19 @@ def backtest(ctx, start_date, end_date, symbols, initial_capital, output_dir, co
         if output_dir:
             Path(output_dir).mkdir(parents=True, exist_ok=True)
             
-            equity_df = engine.get_equity_curve()
+            # 从 runner 的引擎获取数据
+            equity_df = runner._engine.get_equity_curve()
             if not equity_df.empty:
                 equity_path = Path(output_dir) / 'equity_curve.csv'
                 equity_df.to_csv(equity_path, index=False)
                 click.echo(f"\n权益曲线已保存: {equity_path}")
             
-            trades_df = engine.get_trades()
+            trades_df = runner._engine.get_trades()
             if not trades_df.empty:
                 trades_path = Path(output_dir) / 'trades.csv'
                 trades_df.to_csv(trades_path, index=False)
                 click.echo(f"交易记录已保存: {trades_path}")
         
-    except ValueError as e:
-        click.echo(f"参数错误: {e}", err=True)
-        sys.exit(1)
-    except ImportError as e:
-        click.echo(f"模块导入失败: {e}", err=True)
-        sys.exit(1)
     except Exception as e:
         click.echo(f"回测失败: {e}", err=True)
         if ctx.obj.get('verbose'):
@@ -476,97 +436,66 @@ def backtest(ctx, start_date, end_date, symbols, initial_capital, output_dir, co
 @click.pass_context
 def analyze(ctx, symbols, days, config_path, strategy_name, source):
     """分析当前市场状态，给出操作建议"""
-    click.echo("=" * 60)
-    click.echo("市场状态分析")
-    click.echo("=" * 60)
-    
     try:
-        from src.config.loader import load_config
-        from src.data.market import MarketDataService, DataSource
-        from src.strategy.macd import MACDStrategy
-        from src.strategy.macd_multi_timeframe import MultiTimeframeMACDStrategy
-        from src.strategy.macd_weekly import WeeklyMACDStrategy
+        from src.config.loader import load_config, RunParams
+        from src.runner.application import ApplicationRunner
         
         symbol_list = [s.strip() for s in symbols.split(',')]
-        config = load_config(config_path)
         
-        source_map = {
-            'tushare': DataSource.TUSHARE,
-            'akshare': DataSource.AKSHARE,
-            'baostock': DataSource.BAOSTOCK,
-        }
-        data_source = source_map.get(source, DataSource.BAOSTOCK)
-        
-        data_config = {}
-        if source == 'tushare':
-            data_config['tushare_token'] = os.environ.get('TUSHARE_TOKEN', '')
-        service = MarketDataService(source=data_source, config=data_config)
-        
-        strategy_params = config.strategy.params if hasattr(config, 'strategy') else {}
-        
-        if strategy_name == 'multi_timeframe':
-            strategy = MultiTimeframeMACDStrategy(params=strategy_params)
-        elif strategy_name == 'weekly':
-            strategy = WeeklyMACDStrategy(params=strategy_params)
-        else:
-            strategy = MACDStrategy(params=strategy_params)
-        
-        click.echo(f"策略: {strategy.name} v{strategy.version}")
-        click.echo(f"数据源: {source}")
+        click.echo("=" * 60)
+        click.echo("市场状态分析")
+        click.echo("=" * 60)
         click.echo(f"分析标的: {symbol_list}")
+        click.echo(f"回溯天数: {days}")
+        click.echo(f"策略类型: {strategy_name}")
         click.echo("")
         
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
+        # 加载配置
+        config = load_config(config_path)
+        config.strategy.name = strategy_name
         
+        # 构建运行参数
+        params = RunParams(
+            mode='analyze',
+            symbols=symbol_list,
+            days=days,
+            source=source,
+            verbose=ctx.obj.get('verbose', False),
+        )
+        
+        # 创建运行器
+        runner = ApplicationRunner(config=config, params=params)
+        
+        # 执行分析
         for symbol in symbol_list:
             click.echo("-" * 60)
             click.echo(f"分析 {symbol}...")
             
-            try:
-                data = service.get_history(
-                    symbol=symbol,
-                    start_date=start_date,
-                    end_date=end_date
-                )
-                
-                if data is None or data.empty:
-                    click.echo(f"  无法获取 {symbol} 的数据，跳过")
-                    continue
-                
-                click.echo(f"  数据范围: {data.index[0]} ~ {data.index[-1]} ({len(data)} 条)")
-                
-                data = strategy.calculate_indicators(data)
-                result = strategy.analyze_status(data, symbol)
-                
-                click.echo("")
-                click.echo(f"  股票代码: {result.symbol}")
-                click.echo(f"  当前状态: {result.status}")
-                click.echo(f"  建议操作: {result.action}")
-                click.echo(f"  置信度:   {result.confidence:.0%}")
-                click.echo("")
-                click.echo(f"  分析理由:")
-                for line in result.reason.split('\n'):
-                    click.echo(f"    {line.strip()}")
-                click.echo("")
-                click.echo(f"  关键指标:")
-                for key, value in result.indicators.items():
-                    click.echo(f"    {key}: {value}")
-                click.echo("")
-                
-            except Exception as e:
-                click.echo(f"  分析 {symbol} 失败: {e}")
-                if ctx.obj.get('verbose'):
-                    import traceback
-                    traceback.print_exc()
+            result = runner._engine.run_analyze(symbol, days)
+            
+            if 'error' in result:
+                click.echo(f"  {result['error']}")
+                continue
+            
+            click.echo("")
+            click.echo(f"  股票代码: {result['symbol']}")
+            click.echo(f"  当前状态: {result['status']}")
+            click.echo(f"  建议操作: {result['action']}")
+            click.echo(f"  置信度:   {result['confidence']:.0%}")
+            click.echo("")
+            click.echo(f"  分析理由:")
+            for line in result.get('reason', '').split('\n'):
+                click.echo(f"    {line.strip()}")
+            click.echo("")
+            click.echo(f"  关键指标:")
+            for key, value in result.get('indicators', {}).items():
+                click.echo(f"    {key}: {value}")
+            click.echo("")
         
         click.echo("=" * 60)
         click.echo("分析完成")
         click.echo("=" * 60)
         
-    except ImportError as e:
-        click.echo(f"模块导入失败: {e}", err=True)
-        sys.exit(1)
     except Exception as e:
         click.echo(f"分析失败: {e}", err=True)
         if ctx.obj.get('verbose'):
@@ -592,139 +521,48 @@ def analyze(ctx, symbols, days, config_path, strategy_name, source):
 @click.pass_context
 def monitor(ctx, symbols, config_path, strategy_name, interval, source, notify):
     """实时监控，计算信号并发送通知"""
-    click.echo("=" * 60)
-    click.echo("实时监控模式")
-    click.echo("=" * 60)
-    
     try:
-        import time as time_module
-        from src.config.loader import load_config, load_system_config
-        from src.data.market import MarketDataService, DataSource
-        from src.strategy.macd import MACDStrategy
-        from src.strategy.macd_multi_timeframe import MultiTimeframeMACDStrategy
-        from src.strategy.macd_weekly import WeeklyMACDStrategy
+        from src.config.loader import load_config, RunParams
+        from src.runner.application import ApplicationRunner
         
         symbol_list = [s.strip() for s in symbols.split(',')]
-        config = load_config(config_path)
         
-        # 从系统配置读取通知设置
-        sys_config = load_system_config()
-        
-        source_map = {
-            'tushare': DataSource.TUSHARE,
-            'akshare': DataSource.AKSHARE,
-            'baostock': DataSource.BAOSTOCK,
-        }
-        data_source = source_map.get(source, DataSource.BAOSTOCK)
-        data_config = {}
-        if source == 'tushare':
-            data_config['tushare_token'] = os.environ.get('TUSHARE_TOKEN', '')
-        service = MarketDataService(source=data_source, config=data_config)
-        
-        strategy_params = config.strategy.params if hasattr(config, 'strategy') else {}
-        
-        if strategy_name == 'multi_timeframe':
-            strategy = MultiTimeframeMACDStrategy(params=strategy_params)
-        elif strategy_name == 'weekly':
-            strategy = WeeklyMACDStrategy(params=strategy_params)
-        else:
-            strategy = MACDStrategy(params=strategy_params)
-        
-        # 初始化通知服务（从系统配置读取）
-        notifier = None
-        if notify:
-            notifier = _init_notifier_from_sys_config(sys_config)
-            if notifier:
-                click.echo("通知服务已启用")
-            else:
-                click.echo("通知服务未配置，仅控制台输出")
-        
-        click.echo(f"策略: {strategy.name} v{strategy.version}")
+        click.echo("=" * 60)
+        click.echo("实时监控模式")
+        click.echo("=" * 60)
         click.echo(f"监控标的: {symbol_list}")
         click.echo(f"检查间隔: {interval}s")
+        click.echo(f"策略类型: {strategy_name}")
         click.echo(f"数据源: {source}")
+        click.echo(f"通知: {'启用' if notify else '禁用'}")
         click.echo("")
         click.echo("按 Ctrl+C 停止监控")
         click.echo("-" * 60)
         
-        last_signals = {}
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)
+        # 加载配置
+        config = load_config(config_path)
+        config.strategy.name = strategy_name
         
-        while True:
-            try:
-                now = datetime.now()
-                click.echo(f"\n[{now.strftime('%Y-%m-%d %H:%M:%S')}] 检查中...")
-                
-                for symbol in symbol_list:
-                    try:
-                        data = service.get_history(
-                            symbol=symbol,
-                            start_date=start_date,
-                            end_date=now
-                        )
-                        
-                        if data is None or data.empty:
-                            click.echo(f"  {symbol}: 无法获取数据")
-                            continue
-                        
-                        data = strategy.calculate_indicators(data)
-                        analysis = strategy.analyze_status(data, symbol)
-                        
-                        click.echo(
-                            f"  {symbol}: "
-                            f"状态={analysis.status}, "
-                            f"建议={analysis.action}, "
-                            f"置信度={analysis.confidence:.0%}"
-                        )
-                        
-                        from src.core.models import Signal, SignalType, Portfolio
-                        from src.strategy.base import StrategyContext
-                        
-                        portfolio = Portfolio(cash=0, total_value=0)
-                        context = StrategyContext(
-                            symbol=symbol,
-                            portfolio=portfolio,
-                        )
-                        signal = strategy.generate_signal(data, context)
-                        
-                        last_signal = last_signals.get(symbol)
-                        if strategy.should_notify(signal, last_signal):
-                            click.echo(f"  >>> {symbol} 信号变化: {signal.signal_type.name} - {signal.reason}")
-                            
-                            if notifier:
-                                try:
-                                    notifier.send_signal(
-                                        symbol=symbol,
-                                        signal_type=signal.signal_type.name,
-                                        price=signal.price,
-                                        reason=signal.reason,
-                                        additional_info=analysis.indicators,
-                                    )
-                                    click.echo(f"  >>> 通知已发送")
-                                except Exception as e:
-                                    click.echo(f"  >>> 通知发送失败: {e}")
-                        
-                        last_signals[symbol] = signal
-                        
-                    except Exception as e:
-                        click.echo(f"  {symbol}: 处理失败 - {e}")
-                        if ctx.obj.get('verbose'):
-                            import traceback
-                            traceback.print_exc()
-                
-                time_module.sleep(interval)
-                
-            except KeyboardInterrupt:
-                break
+        # 构建运行参数
+        params = RunParams(
+            mode='monitor',
+            symbols=symbol_list,
+            interval=interval,
+            source=source,
+            notify=notify,
+            verbose=ctx.obj.get('verbose', False),
+        )
         
+        # 创建运行器
+        runner = ApplicationRunner(config=config, params=params)
+        
+        # 执行监控
+        runner.start('monitor')
+        
+    except KeyboardInterrupt:
         click.echo("\n监控已停止")
-        
-    except ImportError as e:
-        click.echo(f"模块导入失败: {e}", err=True)
-        sys.exit(1)
     except Exception as e:
-        click.echo(f"监控启动失败: {e}", err=True)
+        click.echo(f"监控失败: {e}", err=True)
         if ctx.obj.get('verbose'):
             import traceback
             traceback.print_exc()

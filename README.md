@@ -1,58 +1,76 @@
-# MACD 量化交易系统
+# 量化交易系统 (Quantitative Trading System)
 
-基于 MACD 指标的量化交易系统，采用命令行无头模式运行。
+一个专业、模块化的量化交易框架，支持多种策略、完整的风控体系和灵活的回测功能。
 
-## 功能特性
+## ✨ 特性
 
-- 📈 **MACD 策略**: 金叉/死叉信号、成交量确认、背离检测
-- 🔄 **模拟交易**: 完整的模拟交易引擎，支持订单执行、持仓管理
-- ⚠️ **风险管理**: 仓位控制、止盈止损、回撤控制
-- 📊 **历史回测**: 支持历史数据回测，计算多种绩效指标
-- 💾 **数据服务**: 支持 Tushare/AKShare 数据源，本地 SQLite 缓存
-- 🖥️ **命令行接口**: 完整的 CLI 命令行操作
+- 🚀 **模块化架构**: 策略、数据、风控、执行器完全解耦
+- 📈 **多种策略**: MACD 日线、周线、多周期共振策略
+- ⚡ **事件驱动**: 高性能事件总线，支持实时处理
+- 🛡️ **完整风控**: 仓位控制、止盈止损、回撤管理
+- 📊 **专业回测**: 详细绩效分析，多维度评估
+- 🖥️ **命令行工具**: 完整的 CLI，支持脚本化操作
+- 💾 **数据管理**: 多数据源支持，本地缓存优化
 
-## 项目结构
+## 🏗️ 系统架构
 
 ```
-quant-macd/
-├── config/                 # 配置文件
-│   └── default.yaml       # 默认配置
-├── src/
-│   ├── core/              # 核心模块
+quant-system/
+├── src/                    # 源代码
+│   ├── core/              # 核心框架
 │   │   ├── models.py      # 数据模型
 │   │   ├── engine.py      # 交易引擎
 │   │   └── event_bus.py   # 事件总线
 │   ├── strategy/          # 策略模块
 │   │   ├── base.py        # 策略基类
-│   │   └── macd.py        # MACD 策略
+│   │   ├── registry.py    # 策略注册
+│   │   ├── macd.py        # MACD 日线策略
+│   │   ├── macd_weekly.py # MACD 周线策略
+│   │   └── macd_multi_timeframe.py # 多周期策略
 │   ├── broker/            # 执行器模块
 │   │   ├── base.py        # 执行器接口
 │   │   └── simulator.py   # 模拟执行器
 │   ├── risk/              # 风控模块
 │   │   └── manager.py     # 风控管理器
 │   ├── data/              # 数据模块
-│   │   ├── market.py      # 行情服务
-│   │   ├── indicator.py   # 指标计算
-│   │   └── portfolio.py   # 持仓管理
+│   │   ├── market.py      # 市场数据
+│   │   ├── indicator.py   # 技术指标
+│   │   └── portfolio.py   # 投资组合
 │   ├── backtest/          # 回测模块
 │   │   ├── engine.py      # 回测引擎
-│   │   └── metrics.py     # 绩效指标
-│   ├── cli/               # 命令行模块
+│   │   └── metrics.py     # 绩效计算
+│   ├── runner/            # 运行器
+│   │   └── application.py # 应用运行器
+│   ├── cli/               # 命令行工具
 │   │   └── main.py        # CLI 入口
-│   └── config/            # 配置管理
-│       └── loader.py      # 配置加载
-├── data/                  # 数据存储（gitignore）
-├── logs/                  # 日志文件（gitignore）
-├── output/                # 输出文件（gitignore）
-├── requirements.txt       # 依赖列表
-└── README.md
+│   ├── config/            # 配置管理
+│   │   └── loader.py      # 配置加载器
+│   └── notification/      # 通知模块
+│       ├── base.py        # 通知基类
+│       ├── email_notifier.py # 邮件通知
+│       └── webhook_notifier.py # Webhook 通知
+├── config/                # 系统配置
+│   └── default.yaml       # 默认配置
+├── docs/                  # 文档
+│   ├── architecture.md    # 系统架构
+│   ├── strategies/        # 策略文档
+│   ├── api/              # API 文档
+│   └── examples/         # 使用示例
+├── tests/                 # 测试代码
+├── data/                  # 数据存储
+├── output/                # 输出结果
+└── notebooks/            # Jupyter 笔记本
 ```
 
-## 快速开始
+## 🚀 快速开始
 
-### 1. 安装依赖
+### 1. 环境准备
 
 ```bash
+# 克隆项目
+git clone <repository-url>
+cd quant-system
+
 # 创建虚拟环境
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
@@ -62,163 +80,192 @@ source venv/bin/activate  # Linux/Mac
 pip install -r requirements.txt
 ```
 
-### 2. 配置
+### 2. 配置设置
 
 ```bash
-# 复制环境变量配置
+# 复制环境配置
 cp .env.example .env
 
-# 编辑 .env 设置 API Token（如使用 Tushare）
-vim .env
+# 编辑配置文件（可选）
+vim config/default.yaml
 ```
 
-### 3. 使用
+### 3. 数据准备
 
 ```bash
-# 查看帮助
-python -m src.main --help
-
-# 同步数据
-python -m src.main data sync --symbols 000001.SZ,600036.SH
-
-# 运行回测
-python -m src.main backtest --start 2024-01-01 --end 2024-12-31
-
-# 启动实时交易（模拟模式）
-python -m src.main run --config config/default.yaml
-
-# 查看持仓报告
-python -m src.main report positions
-
-# 查看交易记录
-python -m src.main report trades --days 7
+# 同步股票数据
+python -m src.cli.main data sync --symbols 002050.SZ --days 365
 ```
 
-## 命令详解
-
-### run - 启动交易
+### 4. 运行回测
 
 ```bash
-python -m src.main run [OPTIONS]
+# 基础回测（MACD 日线策略）
+python -m src.cli.main backtest \
+  --start 2023-01-01 \
+  --end 2025-12-31 \
+  --symbols 002050.SZ \
+  --strategy macd \
+  --initial-capital 1000000
 
-Options:
-  -c, --config PATH    配置文件路径 [default: config/default.yaml]
-  -s, --symbols TEXT   交易标的，逗号分隔
-  -m, --mode TEXT      交易模式: simulation|paper|live
-  --dry-run           试运行，不执行实际交易
+# 周线策略回测
+python -m src.cli.main backtest \
+  --start 2023-01-01 \
+  --end 2025-12-31 \
+  --symbols 002050.SZ \
+  --strategy weekly \
+  --initial-capital 1000000
+
+# 多周期策略回测
+python -m src.cli.main backtest \
+  --start 2023-01-01 \
+  --end 2025-12-31 \
+  --symbols 002050.SZ \
+  --strategy multi_timeframe \
+  --initial-capital 1000000
 ```
 
-### backtest - 历史回测
+## 📋 命令参考
 
-```bash
-python -m src.main backtest [OPTIONS]
-
-Options:
-  -s, --start DATE     开始日期 (YYYY-MM-DD)
-  -e, --end DATE       结束日期 (YYYY-MM-DD)
-  --symbols TEXT       回测标的
-  --initial-capital    初始资金
-  -o, --output PATH    输出目录
-```
-
-### data - 数据管理
+### 数据管理
 
 ```bash
 # 同步数据
-python -m src.main data sync --symbols 000001.SZ --days 365
+python -m src.cli.main data sync --symbols 000001.SZ,600036.SH
 
-# 查看数据信息
-python -m src.main data info --symbol 000001.SZ
+# 数据信息
+python -m src.cli.main data info --symbol 000001.SZ
 
-# 清理缓存
-python -m src.main data clean --before 2024-01-01
+# 清理数据
+python -m src.cli.main data clean --before 2024-01-01
 ```
 
-### report - 报告查询
+### 策略运行
+
+```bash
+# 回测模式
+python -m src.cli.main backtest [OPTIONS]
+
+# 实时监控模式
+python -m src.cli.main monitor --symbols 002050.SZ
+
+# 分析模式
+python -m src.cli.main analyze --symbols 002050.SZ
+```
+
+### 报告查询
 
 ```bash
 # 持仓报告
-python -m src.main report positions
+python -m src.cli.main report positions
 
 # 交易记录
-python -m src.main report trades --days 30
+python -m src.cli.main report trades --days 30
 
-# 每日汇总
-python -m src.main report daily --start 2024-01-01
+# 绩效报告
+python -m src.cli.main report performance --symbol 002050.SZ
 ```
 
-## 核心接口
+## 🎯 策略说明
 
-### 策略接口
+### MACD 日线策略
+- **适用场景**: 短线交易，日内到数日持仓
+- **信号逻辑**: 日线 MACD 金叉买入，死叉卖出
+- **优势**: 信号频繁，捕捉短期波动
+- **风险**: 容易受噪音影响，需要严格止损
 
-```python
-from src.strategy.base import BaseStrategy
+### MACD 周线策略  
+- **适用场景**: 中线趋势交易，数周到数月持仓
+- **信号逻辑**: 周线 MACD 金叉买入，死叉卖出
+- **优势**: 过滤日常噪音，捕捉中期趋势
+- **风险**: 信号稀少，可能错过短期机会
 
-class MyStrategy(BaseStrategy):
-    def calculate_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
-        """计算技术指标"""
-        pass
-    
-    def generate_signal(self, data: pd.DataFrame, context: StrategyContext) -> Signal:
-        """生成交易信号"""
-        pass
+### 多周期共振策略
+- **适用场景**: 趋势跟踪，多时间框架确认
+- **信号逻辑**: 日线+周线+月线多周期信号共振
+- **优势**: 信号质量高，假信号少
+- **风险**: 机会较少，持仓周期较长
+
+## ⚙️ 配置参数
+
+### 策略参数
+```yaml
+strategy:
+  macd:
+    fast_period: 12      # MACD 快线周期
+    slow_period: 26      # MACD 慢线周期
+    signal_period: 9     # MACD 信号线周期
+    volume_confirm: true # 成交量确认
 ```
 
-### 执行器接口
-
-```python
-from src.broker.base import BaseExecutor
-
-class MyExecutor(BaseExecutor):
-    def submit_order(self, order: Order) -> Order:
-        """提交订单"""
-        pass
-    
-    def get_position(self, symbol: str) -> Optional[Position]:
-        """获取持仓"""
-        pass
+### 风控参数
+```yaml
+risk:
+  max_position_pct: 0.3    # 单票最大仓位
+  max_total_position: 0.8  # 最大总仓位
+  stop_loss_pct: 0.05      # 止损比例
+  take_profit_pct: 0.15    # 止盈比例
+  max_drawdown: 0.2         # 最大回撤
 ```
 
-### 风控接口
-
-```python
-from src.risk.manager import RiskManager
-
-risk_manager = RiskManager(config)
-result = risk_manager.check_signal(signal, portfolio)
-if result.approved:
-    # 执行交易
-    pass
+### 执行参数
+```yaml
+broker:
+  initial_capital: 1000000  # 初始资金
+  commission_rate: 0.0003  # 手续费率
+  slippage_rate: 0.001      # 滑点率
 ```
 
-## 配置说明
+## 📊 回测指标
 
-详见 `config/default.yaml`，主要配置项：
+系统提供完整的回测绩效分析：
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| engine.mode | 交易模式 | simulation |
-| strategy.params.fast_period | MACD 快线周期 | 12 |
-| strategy.params.slow_period | MACD 慢线周期 | 26 |
-| risk.max_position_pct | 单票最大仓位 | 0.3 |
-| risk.stop_loss_pct | 止损比例 | 0.05 |
-| broker.initial_capital | 初始资金 | 1000000 |
+- **收益指标**: 总收益率、年化收益率、夏普比率
+- **风险指标**: 最大回撤、波动率、VaR
+- **交易指标**: 交易次数、胜率、盈亏比
+- **其他指标**: 卡尔马比率、索提诺比率、最大连续盈利/亏损
 
-## 开发计划
+## 🧪 开发测试
 
-- [x] 核心数据模型
-- [x] 事件驱动架构
-- [x] MACD 策略实现
-- [x] 模拟交易执行器
-- [x] 风险管理模块
-- [x] 数据服务（Tushare/AKShare）
-- [x] 回测引擎
-- [x] CLI 命令行接口
-- [ ] 更多策略（RSI、布林带等）
-- [ ] 实盘交易对接
-- [ ] 策略优化工具
+```bash
+# 运行所有测试
+python -m pytest tests/
 
-## 许可证
+# 运行特定测试
+python -m pytest tests/test_strategy.py
 
-MIT License
-# quant-system
+# 生成覆盖率报告
+python -m pytest --cov=src tests/
+```
+
+## 📚 文档
+
+- [系统架构](docs/architecture.md) - 详细的系统设计
+- [策略开发指南](docs/strategy-development.md) - 如何开发新策略
+- [API 参考](docs/api/) - 完整的 API 文档
+- [使用示例](docs/examples/) - 实用代码示例
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+1. Fork 项目
+2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 开启 Pull Request
+
+## 📄 许可证
+
+本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+
+## 📞 联系方式
+
+如有问题或建议，请通过以下方式联系：
+
+- 提交 Issue: [GitHub Issues](https://github.com/your-repo/issues)
+- 邮箱: your-email@example.com
+
+---
+
+**免责声明**: 本系统仅用于研究和教育目的，不构成投资建议。使用本系统进行实盘交易存在风险，请谨慎使用。

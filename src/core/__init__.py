@@ -5,10 +5,13 @@
 from .models import *
 from .event_bus import EventBus
 from .engine import TradingEngine
+from .metrics import MetricsCalculator, BacktestResult
 
 __all__ = [
     'EventBus',
     'TradingEngine',
+    'MetricsCalculator',
+    'BacktestResult',
     'SignalType',
     'Signal',
     'EngineState',

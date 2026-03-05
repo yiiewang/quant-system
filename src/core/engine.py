@@ -1,15 +1,24 @@
 """
-交易引擎
-核心调度模块，协调各组件完成交易流程
+统一的交易引擎
+支持多种运行模式：回测、实盘、模拟、分析、监控
 """
-from typing import Dict, Any, Optional, List, Callable
-from datetime import datetime, time
+from typing import Dict, Any, Optional, List, Callable, TYPE_CHECKING
+from datetime import datetime, time, timedelta
 from enum import Enum
 import time as time_module
 import logging
 import threading
 
-from .models import EngineState, EngineConfig, Signal, SignalType, Order, OrderSide, OrderType
+import pandas as pd
+
+if TYPE_CHECKING:
+    from src.strategy.base import BaseStrategy
+
+from .models import (
+    EngineState, EngineConfig, Signal, SignalType, Order, OrderSide, OrderType,
+    Portfolio, AnalysisResult, StrategyContext, EngineMode
+)
+from .metrics import BacktestResult
 from .event_bus import EventBus, EventType, get_event_bus
 
 logger = logging.getLogger(__name__)
@@ -17,22 +26,22 @@ logger = logging.getLogger(__name__)
 
 class TradingEngine:
     """
-    交易引擎
+    统一的交易引擎
     
-    负责:
-    1. 协调策略、执行器、风控等模块
-    2. 驱动交易循环
-    3. 处理信号和订单
+    支持多种运行模式:
+    - BACKTEST: 回测模式 - 在历史数据上运行策略
+    - LIVE: 实盘模式 - 真实交易
+    - PAPER: 模拟模式 - 实时数据但模拟交易
+    - ANALYZE: 分析模式 - 一次性分析当前状态
+    - MONITOR: 监控模式 - 循环监控并发送通知
     
     Usage:
-        config = EngineConfig(
-            symbols=['000001.SZ'],
-            strategy_name='macd',
-            mode='paper'
-        )
-        
         engine = TradingEngine(config)
-        engine.start()  # 启动交易
+        result = engine.run_backtest(start_date, end_date)
+        # 或
+        engine.run_live()
+        # 或
+        engine.run_monitor(symbols, interval=60)
     """
     
     def __init__(self, config: EngineConfig, event_bus: EventBus = None):
@@ -46,6 +55,7 @@ class TradingEngine:
         self.config = config
         self.state = EngineState.IDLE
         self.event_bus = event_bus or get_event_bus()
+        self.mode: Optional[EngineMode] = None
         
         # 核心组件（延迟初始化）
         self._strategy = None
@@ -53,24 +63,34 @@ class TradingEngine:
         self._risk_manager = None
         self._data_service = None
         
+        # 回测专用数据
+        self._backtest_data: Dict[str, 'pd.DataFrame'] = {}
+        self._equity_curve: List[Dict] = []
+        self._trades: List[Dict] = []
+        self._signals: List[Dict] = []
+        
         # 运行时状态
         self._stop_flag = threading.Event()
         self._last_tick_time: Dict[str, datetime] = {}
         
         logger.info(f"初始化交易引擎: {config.symbols}, strategy={config.strategy_name}")
     
-    def start(self) -> None:
+    def run_backtest(self, start_date: datetime, end_date: datetime,
+                     progress_callback: Optional[Callable[[float], None]] = None) -> BacktestResult:
         """
-        启动引擎
+        回测模式：在历史数据上运行策略
         
-        初始化组件并开始交易循环
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+            progress_callback: 进度回调函数 (0-100)
+        
+        Returns:
+            BacktestResult: 回测结果
         """
-        if self.state == EngineState.RUNNING:
-            logger.warning("引擎已在运行中")
-            return
-        
+        self.mode = EngineMode.BACKTEST
         logger.info("=" * 50)
-        logger.info("启动交易引擎")
+        logger.info("回测模式启动")
         logger.info("=" * 50)
         
         try:
@@ -84,18 +104,168 @@ class TradingEngine:
             # 发送启动事件
             self.event_bus.emit(
                 EventType.ENGINE_STARTED,
+                mode="backtest",
                 timestamp=datetime.now(),
                 config=self.config.__dict__
             )
             
-            logger.info("引擎启动成功，进入交易循环")
+            # 加载回测数据
+            self._load_backtest_data(start_date, end_date)
+            
+            # 运行回测循环
+            result = self._run_backtest_loop(progress_callback)
+            
+            # 发送停止事件
+            self.event_bus.emit(EventType.ENGINE_STOPPED, timestamp=datetime.now())
+            
+            return result
+            
+        except Exception as e:
+            self.state = EngineState.ERROR
+            logger.error(f"回测失败: {e}")
+            self.event_bus.emit(EventType.ENGINE_ERROR, error=str(e))
+            raise
+    
+    def run_live(self):
+        """
+        实盘模式：真实交易
+        
+        注意：当前版本暂不支持实盘模式
+        """
+        raise NotImplementedError("实盘模式暂未实现")
+    
+    def run_paper(self):
+        """
+        模拟模式：实时数据但模拟交易
+        """
+        self.mode = EngineMode.PAPER
+        logger.info("=" * 50)
+        logger.info("模拟模式启动")
+        logger.info("=" * 50)
+        
+        try:
+            # 初始化组件
+            self._initialize_components()
+            
+            # 更新状态
+            self.state = EngineState.RUNNING
+            self._stop_flag.clear()
+            
+            # 发送启动事件
+            self.event_bus.emit(
+                EventType.ENGINE_STARTED,
+                mode="paper",
+                timestamp=datetime.now(),
+                config=self.config.__dict__
+            )
             
             # 运行主循环
             self._run_loop()
             
+            # 发送停止事件
+            self.event_bus.emit(EventType.ENGINE_STOPPED, timestamp=datetime.now())
+            
         except Exception as e:
             self.state = EngineState.ERROR
-            logger.error(f"引擎启动失败: {e}")
+            logger.error(f"模拟模式失败: {e}")
+            self.event_bus.emit(EventType.ENGINE_ERROR, error=str(e))
+            raise
+    
+    def run_analyze(self, symbol: str, days: int = 60) -> Dict[str, Any]:
+        """
+        分析模式：一次性分析当前状态
+        
+        Args:
+            symbol: 分析标的
+            days: 回溯天数
+        
+        Returns:
+            分析结果字典
+        """
+        self.mode = EngineMode.ANALYZE
+        logger.info(f"分析 {symbol} (最近 {days} 天)")
+        
+        try:
+            # 初始化组件
+            self._initialize_components()
+            
+            # 获取数据
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days)
+            
+            data = self._data_service.get_history(symbol, start_date, end_date)
+            if data is None or data.empty:
+                return {'error': f'无法获取 {symbol} 的数据'}
+            
+            # 计算指标
+            data = self._strategy.calculate_indicators(data)
+            
+            # 构建上下文
+            portfolio = Portfolio(cash=0, total_value=0)
+            context = StrategyContext(symbol=symbol, portfolio=portfolio)
+            
+            # 分析状态
+            result = self._strategy.analyze_status(data, symbol)
+            
+            return {
+                'symbol': symbol,
+                'status': result.status,
+                'action': result.action,
+                'confidence': result.confidence,
+                'reason': result.reason,
+                'indicators': result.indicators,
+                'current_price': data['close'].iloc[-1] if not data.empty else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"分析失败: {e}")
+            return {'error': str(e)}
+    
+    def run_monitor(self, symbols: List[str], interval: int = 60,
+                    notify_callback: Optional[Callable] = None):
+        """
+        监控模式：循环监控并发送通知
+        
+        Args:
+            symbols: 监控标的列表
+            interval: 检查间隔（秒）
+            notify_callback: 通知回调函数
+        """
+        self.mode = EngineMode.MONITOR
+        self.config.symbols = symbols
+        self.config.poll_interval = interval
+        
+        logger.info("=" * 50)
+        logger.info("监控模式启动")
+        logger.info(f"监控标的: {symbols}")
+        logger.info(f"检查间隔: {interval}s")
+        logger.info("=" * 50)
+        
+        try:
+            # 初始化组件
+            self._initialize_components()
+            
+            # 更新状态
+            self.state = EngineState.RUNNING
+            self._stop_flag.clear()
+            
+            # 发送启动事件
+            self.event_bus.emit(
+                EventType.ENGINE_STARTED,
+                mode="monitor",
+                timestamp=datetime.now(),
+                config=self.config.__dict__
+            )
+            
+            # 运行监控循环
+            self._run_monitor_loop(notify_callback)
+            
+            # 发送停止事件
+            self.event_bus.emit(EventType.ENGINE_STOPPED, timestamp=datetime.now())
+            
+        except Exception as e:
+            self.state = EngineState.ERROR
+            logger.error(f"监控模式失败: {e}")
             self.event_bus.emit(EventType.ENGINE_ERROR, error=str(e))
             raise
     
@@ -150,24 +320,11 @@ class TradingEngine:
         
         return {
             'state': self.state.value,
+            'mode': self.mode.value if self.mode else None,
             'symbols': self.config.symbols,
             'strategy': self.config.strategy_name,
-            'mode': self.config.mode,
             'portfolio': portfolio.to_dict() if portfolio else None,
-            'last_tick': {s: t.isoformat() for s, t in self._last_tick_time.items()},
         }
-    
-    def process_signal(self, signal: Signal) -> Optional[Order]:
-        """
-        手动处理信号
-        
-        Args:
-            signal: 交易信号
-        
-        Returns:
-            Optional[Order]: 执行的订单
-        """
-        return self._process_signal(signal)
     
     def _initialize_components(self) -> None:
         """初始化所有组件"""
@@ -184,14 +341,21 @@ class TradingEngine:
         
         # 初始化执行器
         from src.broker.simulator import SimulatedExecutor
-        if self.config.mode == 'paper':
+        if self.mode == EngineMode.BACKTEST:
             self._executor = SimulatedExecutor(
-                initial_capital=self.config.initial_capital
+                initial_capital=self.config.initial_capital,
+                commission_rate=self.config.commission,
+                slippage=self.config.slippage
+            )
+        elif self.mode == EngineMode.PAPER:
+            self._executor = SimulatedExecutor(
+                initial_capital=self.config.initial_capital,
+                commission_rate=self.config.commission,
+                slippage=self.config.slippage
             )
         else:
-            # 实盘模式需要对接券商 API
-            raise NotImplementedError("实盘模式暂未实现")
-        logger.info(f"执行器已初始化: {self.config.mode} 模式")
+            raise NotImplementedError(f"实盘模式暂未实现: {self.mode}")
+        logger.info(f"执行器已初始化: {self.mode.value} 模式")
         
         # 初始化风控
         from src.risk.manager import RiskManager, RiskConfig
@@ -200,11 +364,60 @@ class TradingEngine:
         
         # 初始化数据服务
         from src.data.market import MarketDataService, DataSource
-        self._data_service = MarketDataService(source=DataSource.LOCAL)
+        if self.mode == EngineMode.BACKTEST:
+            self._data_service = MarketDataService(source=DataSource.LOCAL)
+        else:
+            self._data_service = MarketDataService(source=DataSource.BAOSTOCK)
         logger.info("数据服务已初始化")
     
+    def _load_backtest_data(self, start_date: datetime, end_date: datetime) -> None:
+        """加载回测数据"""
+        logger.info("加载回测数据...")
+        
+        for symbol in self.config.symbols:
+            data = self._data_service.get_history(symbol, start_date, end_date)
+            if data is not None and not data.empty:
+                self._backtest_data[symbol] = data
+                logger.info(f"  {symbol}: {len(data)} 条数据")
+            else:
+                logger.warning(f"  {symbol}: 无数据")
+    
+    def _run_backtest_loop(self, progress_callback: Optional[Callable[[float], None]] = None) -> BacktestResult:
+        """运行回测循环"""
+        logger.info("开始回测...")
+        
+        # 获取所有交易日期
+        all_dates = self._get_all_dates()
+        total_days = len(all_dates)
+        
+        logger.info(f"回测区间: {total_days} 个交易日")
+        
+        # 按日期遍历
+        for i, current_date in enumerate(all_dates):
+            if self._stop_flag.is_set():
+                break
+            
+            # 每个标的处理
+            for symbol in self.config.symbols:
+                self._process_bar(symbol, current_date, is_backtest=True)
+            
+            # 记录权益
+            self._record_equity(current_date)
+            
+            # 进度回调
+            if progress_callback and i % 10 == 0:
+                progress = (i + 1) / total_days * 100
+                progress_callback(progress)
+        
+        # 计算结果
+        result = self._calculate_backtest_result()
+        
+        logger.info(f"回测完成: 总收益率={result.total_return:.2%}")
+        
+        return result
+    
     def _run_loop(self) -> None:
-        """主交易循环"""
+        """主交易循环（模拟/实盘模式）"""
         while not self._stop_flag.is_set():
             # 检查状态
             if self.state == EngineState.PAUSED:
@@ -230,9 +443,83 @@ class TradingEngine:
             # 等待下次轮询
             time_module.sleep(self.config.poll_interval)
     
+    def _run_monitor_loop(self, notify_callback: Optional[Callable] = None) -> None:
+        """监控循环"""
+        last_signals = {}
+        
+        while not self._stop_flag.is_set():
+            try:
+                now = datetime.now()
+                logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 检查中...")
+                
+                for symbol in self.config.symbols:
+                    try:
+                        self._monitor_symbol(symbol, last_signals, notify_callback)
+                    except Exception as e:
+                        logger.error(f"  {symbol}: 处理失败 - {e}")
+                
+                time_module.sleep(self.config.poll_interval)
+                
+            except KeyboardInterrupt:
+                break
+    
+    def _monitor_symbol(self, symbol: str, last_signals: Dict,
+                        notify_callback: Optional[Callable] = None) -> None:
+        """监控单个标的"""
+        end_date = datetime.now()
+        start_date = end_date - time_module.timedelta(days=60)
+        
+        data = self._data_service.get_history(symbol, start_date, end_date)
+        
+        if data is None or data.empty:
+            logger.info(f"  {symbol}: 无法获取数据")
+            return
+        
+        # 计算指标
+        data = self._strategy.calculate_indicators(data)
+        
+        # 分析状态
+        analysis = self._strategy.analyze_status(data, symbol)
+        
+        logger.info(
+            f"  {symbol}: "
+            f"状态={analysis.status}, "
+            f"建议={analysis.action}, "
+            f"置信度={analysis.confidence:.0%}"
+        )
+        
+        # 生成信号用于通知判断
+        portfolio = Portfolio(cash=0, total_value=0)
+        context = StrategyContext(symbol=symbol, portfolio=portfolio)
+        signal = self._strategy.generate_signal(data, context)
+        
+        # 策略决定是否通知
+        last_signal = last_signals.get(symbol)
+        if self._strategy.should_notify(signal, last_signal):
+            logger.info(f"  >>> {symbol} 信号变化: {signal.signal_type.name} - {signal.reason}")
+            
+            # 发送事件
+            self.event_bus.emit(
+                EventType.SIGNAL_GENERATED,
+                signal=signal.to_dict(),
+                mode='monitor'
+            )
+            
+            # 调用通知回调
+            if notify_callback:
+                notify_callback({
+                    'symbol': symbol,
+                    'signal_type': signal.signal_type.name,
+                    'price': signal.price,
+                    'reason': signal.reason,
+                    'indicators': analysis.indicators,
+                })
+        
+        last_signals[symbol] = signal
+    
     def _tick(self) -> None:
         """
-        单次交易循环
+        单次交易循环（模拟/实盘模式）
         
         对每个标的执行: 获取数据 -> 计算指标 -> 生成信号 -> 处理信号
         """
@@ -244,7 +531,7 @@ class TradingEngine:
     
     def _process_symbol(self, symbol: str) -> None:
         """
-        处理单个标的
+        处理单个标的（模拟/实盘模式）
         
         Args:
             symbol: 股票代码
@@ -264,7 +551,6 @@ class TradingEngine:
         data = self._strategy.calculate_indicators(data)
         
         # 构建策略上下文
-        from src.strategy.base import StrategyContext
         portfolio = self._executor.get_portfolio()
         position = portfolio.get_position(symbol)
         
@@ -297,22 +583,89 @@ class TradingEngine:
         if position and position.quantity > 0:
             self._check_exit_conditions(symbol, position, current_price)
     
-    def _process_signal(self, signal: Signal) -> Optional[Order]:
+    def _process_bar(self, symbol: str, current_date: datetime, is_backtest: bool = False) -> None:
+        """
+        处理单根 K 线（回测模式）
+        
+        Args:
+            symbol: 股票代码
+            current_date: 当前日期
+            is_backtest: 是否为回测模式
+        """
+        data = self._backtest_data.get(symbol)
+        if data is None or data.empty:
+            return
+        
+        # 获取截止当前日期的数据
+        mask = data['date'] <= current_date
+        available_data = data[mask].copy()
+        
+        if len(available_data) < 60:  # 数据不足
+            return
+        
+        # 获取当日价格
+        current_bar = available_data.iloc[-1]
+        current_price = current_bar['close']
+        
+        # 更新执行器价格
+        self._executor.update_price(symbol, current_price)
+        
+        # 计算指标
+        available_data = self._strategy.calculate_indicators(available_data)
+        
+        # 构建上下文
+        portfolio = self._executor.get_portfolio()
+        position = portfolio.get_position(symbol)
+        
+        context = StrategyContext(
+            symbol=symbol,
+            portfolio=portfolio,
+            position=position,
+            timestamp=current_date,
+            params=self._strategy.params
+        )
+        
+        # 生成信号
+        signal = self._strategy.generate_signal(available_data, context)
+        
+        # 记录信号
+        if is_backtest and signal.signal_type != SignalType.HOLD:
+            self._signals.append({
+                'date': current_date,
+                'symbol': symbol,
+                'type': signal.signal_type.name,
+                'price': signal.price,
+                'reason': signal.reason
+            })
+        
+        # 处理信号
+        self._process_signal(signal, is_backtest)
+        
+        # 检查止盈止损
+        if position and position.quantity > 0:
+            self._check_exit(symbol, position, current_price)
+    
+    def _process_signal(self, signal: Signal, is_backtest: bool = False) -> Optional[Order]:
         """
         处理交易信号
         
         Args:
             signal: 交易信号
+            is_backtest: 是否为回测模式
         
         Returns:
-            Optional[Order]: 执行的订单
+            Optional[OrderResult]: 执行的订单结果
         """
+        if signal.signal_type == SignalType.HOLD:
+            return None
+        
         logger.info(f"收到信号: {signal.symbol} {signal.signal_type.name} @ {signal.price:.2f}")
         
         # 发送信号事件
         self.event_bus.emit(
             EventType.SIGNAL_GENERATED,
-            signal=signal.to_dict()
+            signal=signal.to_dict(),
+            mode=self.mode.value if self.mode else 'unknown'
         )
         
         # 风控检查
@@ -336,32 +689,42 @@ class TradingEngine:
             return None
         
         # 执行订单
-        result = self._executor.submit_order(order)
+        executed_order = self._executor.submit_order(order)
         
-        # 发送订单事件
-        if result.is_filled:
-            logger.info(f"订单成交: {result.symbol} {result.side.value} "
-                       f"{result.filled_quantity}@{result.filled_price:.2f}")
+        # 检查订单是否成交（订单状态为 FILLED）
+        from src.core.models import OrderStatus
+        if executed_order.status == OrderStatus.FILLED:
+            logger.info(f"订单成交: {executed_order.symbol} {executed_order.side.value} "
+                       f"{executed_order.quantity}@{executed_order.price:.2f}")
+            
             self.event_bus.emit(
                 EventType.ORDER_FILLED,
-                order=result.to_dict()
+                order=executed_order.to_dict()
             )
             
-            # 通知策略
-            self._strategy.on_order_filled(result)
+            # 回测记录
+            if is_backtest:
+                self._trades.append({
+                    'date': signal.timestamp,
+                    'symbol': signal.symbol,
+                    'side': executed_order.side.value,
+                    'quantity': executed_order.filled_quantity,
+                    'price': executed_order.filled_price,
+                    'reason': signal.reason
+                })
             
             # 更新风控统计
-            if result.side == OrderSide.SELL:
-                pnl = (result.filled_price - signal.price) * result.filled_quantity
+            if executed_order.side == OrderSide.SELL:
+                pnl = (executed_order.filled_price - signal.price) * executed_order.filled_quantity
                 self._risk_manager.update_daily_pnl(pnl)
         else:
-            logger.warning(f"订单未成交: {result.message}")
+            logger.warning(f"订单未成交: {executed_order.status.value}")
             self.event_bus.emit(
                 EventType.ORDER_REJECTED,
-                order=result.to_dict()
+                order=executed_order.to_dict()
             )
         
-        return result
+        return executed_order
     
     def _create_order(self, signal: Signal) -> Optional[Order]:
         """
@@ -411,7 +774,7 @@ class TradingEngine:
     
     def _check_exit_conditions(self, symbol: str, position, current_price: float) -> None:
         """
-        检查退出条件（止盈止损）
+        检查退出条件（止盈止损）- 模拟/实盘模式
         
         Args:
             symbol: 股票代码
@@ -441,6 +804,80 @@ class TradingEngine:
             )
             self._process_signal(signal)
     
+    def _check_exit(self, symbol: str, position, current_price: float) -> None:
+        """
+        检查退出条件（止盈止损）- 回测模式
+        
+        Args:
+            symbol: 股票代码
+            position: 当前持仓
+            current_price: 当前价格
+        """
+        portfolio = self._executor.get_portfolio()
+        
+        if self._risk_manager.check_stop_loss(position, current_price):
+            signal = Signal(
+                symbol=symbol,
+                signal_type=SignalType.SELL,
+                price=current_price,
+                reason="止损",
+                strength=1.0
+            )
+            self._process_signal(signal, is_backtest=True)
+        
+        elif self._risk_manager.check_take_profit(position, current_price):
+            signal = Signal(
+                symbol=symbol,
+                signal_type=SignalType.SELL,
+                price=current_price,
+                reason="止盈",
+                strength=1.0
+            )
+            self._process_signal(signal, is_backtest=True)
+    
+    def _record_equity(self, date: datetime) -> None:
+        """记录权益曲线"""
+        portfolio = self._executor.get_portfolio()
+        
+        self._equity_curve.append({
+            'date': date,
+            'total_value': portfolio.total_value,
+            'cash': portfolio.cash,
+            'position_value': portfolio.position_value,
+            'daily_pnl': portfolio.daily_pnl
+        })
+    
+    def _get_all_dates(self) -> List[datetime]:
+        """获取所有交易日期"""
+        all_dates = set()
+        
+        for data in self._backtest_data.values():
+            dates = data['date'].tolist()
+            all_dates.update(dates)
+        
+        return sorted(list(all_dates))
+    
+    def _calculate_backtest_result(self) -> BacktestResult:
+        """计算回测结果"""
+        from .metrics import MetricsCalculator
+        
+        equity_df = pd.DataFrame(self._equity_curve)
+        
+        if equity_df.empty:
+            return BacktestResult()
+        
+        # 使用指标计算器
+        metrics_calc = MetricsCalculator()
+        result = metrics_calc.calculate(
+            equity_curve=equity_df,
+            trades=self._trades,
+            initial_capital=self.config.initial_capital,
+            risk_free_rate=0.03
+        )
+        
+        # 直接返回 BacktestResult
+        return result
+    
     def _is_trading_time(self) -> bool:
         """
         检查是否在交易时间内
@@ -464,3 +901,15 @@ class TradingEngine:
         is_weekday = now.weekday() < 5
         
         return is_weekday and (is_morning or is_afternoon)
+    
+    def get_equity_curve(self) -> pd.DataFrame:
+        """获取权益曲线"""
+        return pd.DataFrame(self._equity_curve)
+    
+    def get_trades(self) -> pd.DataFrame:
+        """获取交易记录"""
+        return pd.DataFrame(self._trades)
+    
+    def get_signals(self) -> pd.DataFrame:
+        """获取信号记录"""
+        return pd.DataFrame(self._signals)

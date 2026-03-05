@@ -95,6 +95,8 @@ class WeeklyMACDStrategy(BaseStrategy):
         self._weekly_data: Optional[pd.DataFrame] = None
         self._last_weekly_signal: Optional[str] = None  # 记录上一个周线信号
         self._last_week_end: Optional[pd.Timestamp] = None  # 上一周结束日期
+        self._last_signal_date: Optional[pd.Timestamp] = None  # 上次产生信号的日期
+        self._last_signal_type: Optional[str] = None  # 上次信号类型
     
     def resample_to_weekly(self, daily_data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -203,6 +205,7 @@ class WeeklyMACDStrategy(BaseStrategy):
         1. 只在每周结束时检查周线 MACD 信号
         2. 周线金叉 → 买入
         3. 周线死叉 → 卖出
+        4. 同一信号只产生一次，避免重复
         
         Args:
             data: 日线数据（用于获取当前价格）
@@ -218,6 +221,10 @@ class WeeklyMACDStrategy(BaseStrategy):
         # 获取当前日期和价格
         current_date = data.index[-1] if isinstance(data.index, pd.DatetimeIndex) else pd.to_datetime(data.iloc[-1].get('date', data.iloc[-1].name))
         price = data['close'].iloc[-1]
+        
+        # 检查是否是新的一天（避免同一天内重复信号）
+        if self._last_signal_date is not None and current_date.date() == self._last_signal_date.date():
+            return create_hold_signal(context.symbol, price, "同日信号，跳过处理")
         
         # 获取最新的完整周线数据
         # 找到当前日期之前最近的完整周
@@ -244,65 +251,88 @@ class WeeklyMACDStrategy(BaseStrategy):
             'weekly_date': str(weekly_data_before_current.index[-1].date()),
         }
         
+        signal = None
+        signal_reason = ""
+        
         # ===== 卖出信号检查 =====
         if context.position and context.position.quantity > 0:
             # 周线死叉 - 卖出
             if weekly_death_cross:
-                return create_sell_signal(
+                signal = create_sell_signal(
                     symbol=context.symbol,
                     price=price,
                     strength=0.9,
                     reason=f"周线死叉卖出 | MACD={weekly_macd:.4f}",
                     **metadata
                 )
+                signal_reason = "周线死叉"
             
             # 周线处于死叉状态 - 也卖出
-            if not weekly_is_golden:
-                return create_sell_signal(
+            elif not weekly_is_golden:
+                signal = create_sell_signal(
                     symbol=context.symbol,
                     price=price,
                     strength=0.8,
                     reason=f"周线死叉状态，清仓 | MACD={weekly_macd:.4f}",
                     **metadata
                 )
+                signal_reason = "周线死叉状态"
         
         # ===== 买入信号检查 =====
-        # 周线金叉 - 买入
-        if weekly_golden_cross:
-            # 计算信号强度
-            strength = 0.8
+        if signal is None:
+            # 周线金叉 - 买入
+            if weekly_golden_cross:
+                # 计算信号强度
+                strength = 0.8
+                
+                # 零轴下方金叉，强度更高（超卖反弹）
+                if weekly_macd < 0:
+                    strength = 0.9
+                
+                # MACD 柱向上扩张
+                if len(weekly_data_before_current) >= 2:
+                    prev_hist = weekly_data_before_current.iloc[-2]['histogram']
+                    if weekly_histogram > prev_hist:
+                        strength = min(1.0, strength + 0.1)
+                
+                signal = create_buy_signal(
+                    symbol=context.symbol,
+                    price=price,
+                    strength=strength,
+                    reason=f"周线金叉买入 | MACD={weekly_macd:.4f}",
+                    **metadata
+                )
+                signal_reason = "周线金叉"
             
-            # 零轴下方金叉，强度更高（超卖反弹）
-            if weekly_macd < 0:
-                strength = 0.9
-            
-            # MACD 柱向上扩张
-            if len(weekly_data_before_current) >= 2:
-                prev_hist = weekly_data_before_current.iloc[-2]['histogram']
-                if weekly_histogram > prev_hist:
-                    strength = min(1.0, strength + 0.1)
-            
-            return create_buy_signal(
-                symbol=context.symbol,
-                price=price,
-                strength=strength,
-                reason=f"周线金叉买入 | MACD={weekly_macd:.4f}",
-                **metadata
+            # 周线处于金叉状态，但已经持有或等待入场
+            elif weekly_is_golden and not (context.position and context.position.quantity > 0):
+                # 如果之前没有持仓且处于金叉状态，考虑入场
+                # 但只在刚进入金叉状态时入场（避免追高）
+                pass
+        
+        # 如果没有信号，返回持有
+        if signal is None:
+            status = "金叉状态" if weekly_is_golden else "死叉状态"
+            signal = create_hold_signal(
+                context.symbol, 
+                price, 
+                f"周线{status}，等待信号 | MACD={weekly_macd:.4f}"
             )
+            signal_reason = "持有"
         
-        # 周线处于金叉状态，但已经持有或等待入场
-        if weekly_is_golden and not (context.position and context.position.quantity > 0):
-            # 如果之前没有持仓且处于金叉状态，考虑入场
-            # 但只在刚进入金叉状态时入场（避免追高）
-            pass
+        # 检查信号是否重复
+        current_signal_type = f"{signal.signal_type.value}_{signal_reason}"
+        if (self._last_signal_type is not None and 
+            current_signal_type == self._last_signal_type and
+            self._last_signal_date is not None and
+            (current_date - self._last_signal_date).days < 7):  # 同一周内不重复相同信号
+            return create_hold_signal(context.symbol, price, f"重复信号过滤: {signal_reason}")
         
-        # 无信号
-        status = "金叉状态" if weekly_is_golden else "死叉状态"
-        return create_hold_signal(
-            context.symbol, 
-            price, 
-            f"周线{status}，等待信号 | MACD={weekly_macd:.4f}"
-        )
+        # 更新信号记录
+        self._last_signal_date = current_date
+        self._last_signal_type = current_signal_type
+        
+        return signal
     
     def analyze_status(self, data: pd.DataFrame, symbol: str) -> AnalysisResult:
         """

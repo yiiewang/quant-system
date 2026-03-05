@@ -282,7 +282,7 @@ class MetricsCalculator:
         return annual_return / max_drawdown
     
     def _calculate_trade_stats(self, trades: List[Dict]) -> Dict:
-        """计算交易统计"""
+        """计算交易统计（通过买卖配对计算每笔盈亏）"""
         stats = {
             'trade_count': 0,
             'win_count': 0,
@@ -294,52 +294,61 @@ class MetricsCalculator:
             'max_consecutive_wins': 0,
             'max_consecutive_losses': 0,
         }
-        
+
         if not trades:
             return stats
-        
-        # 计算每笔交易盈亏
-        # 假设 trades 已经是配对的买卖记录
+
+        # 按标的分组，配对买卖计算盈亏
+        from collections import defaultdict
+        buy_queue: dict = defaultdict(list)  # symbol -> [buy_trade, ...]
         pnls = []
-        
-        # 简化：直接使用交易数量
-        buy_trades = [t for t in trades if t.get('side') == 'buy']
-        sell_trades = [t for t in trades if t.get('side') == 'sell']
-        
-        stats['trade_count'] = len(sell_trades)  # 以卖出次数计
-        
-        # 这里简化计算，实际应该配对买卖
+
+        for trade in trades:
+            side = trade.get('side', '')
+            symbol = trade.get('symbol', '')
+            price = trade.get('price', 0)
+            quantity = trade.get('quantity', 0)
+
+            if side == 'buy':
+                buy_queue[symbol].append({'price': price, 'quantity': quantity})
+            elif side == 'sell' and buy_queue[symbol]:
+                buy = buy_queue[symbol].pop(0)
+                pnl = (price - buy['price']) * min(quantity, buy['quantity'])
+                pnls.append(pnl)
+
+        stats['trade_count'] = len(pnls)
         if stats['trade_count'] == 0:
             return stats
-        
-        # 假设有盈亏信息
-        profits = []
-        losses = []
-        
-        for trade in trades:
-            pnl = trade.get('pnl', 0)
-            if pnl > 0:
-                profits.append(pnl)
-            elif pnl < 0:
-                losses.append(abs(pnl))
-        
+
+        profits = [p for p in pnls if p > 0]
+        losses = [abs(p) for p in pnls if p < 0]
+
         stats['win_count'] = len(profits)
         stats['lose_count'] = len(losses)
-        
-        if stats['trade_count'] > 0:
-            stats['win_rate'] = stats['win_count'] / stats['trade_count']
-        
-        if profits:
-            stats['avg_profit'] = sum(profits) / len(profits)
-        if losses:
-            stats['avg_loss'] = sum(losses) / len(losses)
-        
-        total_profit = sum(profits) if profits else 0
-        total_loss = sum(losses) if losses else 0
-        
-        if total_loss > 0:
-            stats['profit_factor'] = total_profit / total_loss
-        
+        stats['win_rate'] = stats['win_count'] / stats['trade_count']
+
+        stats['avg_profit'] = sum(profits) / len(profits) if profits else 0
+        stats['avg_loss'] = sum(losses) / len(losses) if losses else 0
+
+        total_profit = sum(profits)
+        total_loss = sum(losses)
+        stats['profit_factor'] = total_profit / total_loss if total_loss > 0 else float('inf')
+
+        # 计算最大连胜/连亏
+        max_wins = max_losses = cur_wins = cur_losses = 0
+        for p in pnls:
+            if p > 0:
+                cur_wins += 1
+                cur_losses = 0
+            else:
+                cur_losses += 1
+                cur_wins = 0
+            max_wins = max(max_wins, cur_wins)
+            max_losses = max(max_losses, cur_losses)
+
+        stats['max_consecutive_wins'] = max_wins
+        stats['max_consecutive_losses'] = max_losses
+
         return stats
     
     def _calculate_monthly_returns(self, equity_curve: pd.DataFrame) -> Dict[str, float]:
