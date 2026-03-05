@@ -1,42 +1,43 @@
 #!/bin/bash
+# -*- coding: utf-8 -*-
 
 # 量化交易系统验证脚本
 # 一键验证所有命令和功能
 
 set -e  # 遇到错误立即退出
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
+# 颜色定义 (支持 256 色终端)
+RED='\033[91m'
+GREEN='\033[92m'
+YELLOW='\033[93m'
+BLUE='\033[94m'
 NC='\033[0m' # No Color
 
 # 项目根目录
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# 日志函数
+# 日志函数 (改用 ASCII 符号)
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+    printf "${BLUE}[INFO]${NC} %s\n" "$1"
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+    printf "${GREEN}[OK]${NC} %s\n" "$1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    printf "${RED}[ERROR]${NC} %s\n" "$1"
 }
 
 log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+    printf "${YELLOW}[WARN]${NC} %s\n" "$1"
 }
 
 log_step() {
-    echo -e "${BLUE}=====================================${NC}"
-    echo -e "${BLUE}$1${NC}"
-    echo -e "${BLUE}=====================================${NC}"
+    printf "\n${BLUE}=====================================${NC}\n"
+    printf "${BLUE}%s${NC}\n" "$1"
+    printf "${BLUE}=====================================${NC}\n"
 }
 
 # 检查命令是否存在
@@ -391,37 +392,38 @@ verify_performance() {
 generate_report() {
     log_step "验证报告"
     
-    echo -e "\n${BLUE}=====================================${NC}"
-    echo -e "${BLUE}        验证结果总览${NC}"
-    echo -e "${BLUE}=====================================${NC}"
+    printf "\n${BLUE}=====================================${NC}\n"
+    printf "${BLUE}        验证结果总览${NC}\n"
+    printf "${BLUE}=====================================${NC}\n"
     
-    echo -e "总测试数: ${BLUE}$TOTAL_TESTS${NC}"
-    echo -e "通过测试: ${GREEN}$PASSED_TESTS${NC}"
-    echo -e "失败测试: ${RED}$FAILED_TESTS${NC}"
+    printf "总测试数: ${BLUE}%d${NC}\n" "$TOTAL_TESTS"
+    printf "通过测试: ${GREEN}%d${NC}\n" "$PASSED_TESTS"
+    printf "失败测试: ${RED}%d${NC}\n" "$FAILED_TESTS"
     
-    success_rate=$(echo "scale=2; $PASSED_TESTS * 100 / $TOTAL_TESTS" | bc -l)
-    echo -e "成功率: ${BLUE}${success_rate}%${NC}"
+    if [ "$TOTAL_TESTS" -gt 0 ]; then
+        success_rate=$(echo "scale=1; $PASSED_TESTS * 100 / $TOTAL_TESTS" | bc 2>/dev/null || echo "0")
+        printf "成功率: ${BLUE}%s%%${NC}\n" "$success_rate"
+    fi
     
     if [ $FAILED_TESTS -eq 0 ]; then
-        echo -e "\n${GREEN}🎉 所有验证测试通过！系统运行正常。${NC}"
+        printf "\n${GREEN}[SUCCESS] 所有验证测试通过！系统运行正常。${NC}\n"
         return 0
     else
-        echo -e "\n${RED}❌ 有 $FAILED_TESTS 个测试失败，请检查上述错误信息。${NC}"
+        printf "\n${RED}[FAILED] 有 %d 个测试失败，请检查上述错误信息。${NC}\n" "$FAILED_TESTS"
         return 1
     fi
 }
 
 # 主函数
 main() {
-    echo -e "${BLUE}"
-    echo "====================================="
-    echo "  量化交易系统验证脚本"
-    echo "====================================="
-    echo -e "${NC}"
+    printf "${BLUE}"
+    printf "=====================================\n"
+    printf "  量化交易系统验证脚本\n"
+    printf "=====================================\n"
+    printf "${NC}"
     
-    echo "项目根目录: $PROJECT_ROOT"
-    echo "验证开始时间: $(date)"
-    echo ""
+    printf "项目根目录: %s\n" "$PROJECT_ROOT"
+    printf "验证开始时间: %s\n\n" "$(date)"
     
     # 执行所有验证
     check_environment || exit 1
