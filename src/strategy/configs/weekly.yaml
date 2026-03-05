@@ -1,0 +1,77 @@
+# MACD 量化交易系统 - 周线 MACD 策略配置
+
+# 交易引擎配置
+engine:
+  mode: "simulation"
+  tick_interval: 60
+  symbols:
+    - "002050.SZ"     # 三花智控
+
+# 策略配置 - 周线MACD策略
+strategy:
+  name: "macd"
+  params:
+    # MACD 参数（周线级别）
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+
+    # 使用周线级别
+    timeframe: "weekly"
+
+    # 信号过滤
+    volume_confirm: true
+    volume_threshold: 1.5
+    trend_filter: true
+    trend_ma_period: 20
+
+    # 背离检测
+    divergence_enabled: true
+    divergence_periods: 8
+    divergence_sell_ratio: 0.5
+
+# 风控配置
+risk:
+  max_position_pct: 0.4
+  max_total_position_pct: 0.9
+  position_sizing: "equal"
+
+  stop_loss_pct: 0.10            # 周线止损放宽到 10%
+  take_profit_pct: 0.30          # 止盈 30%
+  trailing_stop: true
+  trailing_stop_pct: 0.08        # 移动止损回撤 8%
+
+  max_drawdown_pct: 0.20
+  daily_loss_limit: 0.05
+
+# 交易执行配置
+broker:
+  type: "simulator"
+  initial_capital: 1000000
+
+  commission_rate: 0.00008
+  min_commission: 5.0
+  stamp_duty: 0.001
+  slippage: 0.001
+
+# 数据源配置
+data:
+  provider: "akshare"
+  cache:
+    enabled: true
+    db_path: "data/market.db"
+    expire_days: 1
+
+  sync:
+    auto_sync: true
+    sync_on_start: true
+    history_days: 730           # 周线需要更长历史数据
+
+# 回测配置
+backtest:
+  start_date: "2020-01-01"
+  end_date: "2025-12-31"
+  benchmark: "000300.SH"
+  output_dir: "output/backtest"
+  save_trades: true
+  generate_report: true

@@ -1,0 +1,25 @@
+# MACD 量化交易系统 - 系统配置
+# 本文件包含系统级配置（日志、数据存储、报告等）
+# 通知配置已移至策略配置文件，每个策略可独立指定通知方式
+# 策略配置请参见 src/strategy/configs/ 目录
+
+# 系统基础配置
+system:
+  name: "MACD Trading System"
+  version: "1.0.0"
+  log_level: "INFO"
+  log_file: "logs/trading.log"
+  data_dir: "data"
+
+# 数据存储配置
+storage:
+  # 本地缓存数据库
+  db_path: "data/market.db"
+  # 持仓/交易记录
+  portfolio_db: "data/portfolio.db"
+
+# 报告配置
+report:
+  output_dir: "output/reports"
+  format: "markdown"            # markdown | html | json
+  include_charts: false         # 命令行模式不生成图表
