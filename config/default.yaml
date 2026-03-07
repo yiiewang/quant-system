@@ -23,3 +23,11 @@ report:
   output_dir: "output/reports"
   format: "markdown"            # markdown | html | json
   include_charts: false         # 命令行模式不生成图表
+
+# HTTP API 服务配置
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+  cors_origins:
+    - "*"

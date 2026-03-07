@@ -986,6 +986,101 @@ def config_cmd(ctx, show, init, output_path):
         sys.exit(1)
 
 
+# ============= client 命令 (交互式客户端) =============
+
+@cli.command('client')
+@click.option('--server', default='localhost:8000',
+              help='API 服务地址 (host:port)')
+@click.pass_context
+def client(ctx, server):
+    """以交互式客户端连接到 API 服务
+
+    \b
+    连接到运行中的 HTTP API 服务，在终端中持续发送指令。
+    需要先通过 serve 命令启动服务。
+
+    \b
+    内置命令:
+      health        检查服务状态
+      strategies    列出可用策略
+      analyze       分析标的
+      backtest      运行回测
+      monitor       监控管理 (start/stop/status)
+      status        查看监控状态
+      help          显示帮助
+      exit          退出
+
+    \b
+    示例:
+      python -m src.main client                        # 连接 localhost:8000
+      python -m src.main client --server 10.0.0.1:9000 # 连接远程服务
+
+    \b
+    交互示例:
+      macd> analyze 000001.SZ --strategy macd --days 180
+      macd> backtest 002050.SZ --start 2024-01-01 --end 2025-01-01
+      macd> monitor start 000001.SZ,002050.SZ --interval 60
+      macd> status
+    """
+    from src.cli.client import start_client
+    start_client(server)
+
+
+# ============= serve 命令 (HTTP API 服务) =============
+
+@cli.command('serve')
+@click.option('-H', '--host', default='0.0.0.0', help='监听地址')
+@click.option('-p', '--port', default=8000, type=int, help='监听端口')
+@click.option('--reload', 'auto_reload', is_flag=True, help='开发模式，代码变更自动重载')
+@click.option('--workers', default=1, type=int, help='工作进程数')
+@click.option('--log-level', 'log_level', default='info',
+              type=click.Choice(['debug', 'info', 'warning', 'error']),
+              help='日志级别')
+@click.pass_context
+def serve(ctx, host, port, auto_reload, workers, log_level):
+    """以 HTTP API 服务形式启动系统
+
+    \b
+    提供 RESTful API 接口，支持:
+      - POST /api/analyze       分析标的
+      - POST /api/backtest      运行回测
+      - POST /api/monitor/start 启动监控
+      - POST /api/monitor/stop  停止监控
+      - GET  /api/monitor/status 监控状态
+      - GET  /api/strategies    策略列表
+      - GET  /api/health        健康检查
+
+    \b
+    示例:
+      python -m src.main serve                    # 默认 0.0.0.0:8000
+      python -m src.main serve -p 9000 --reload   # 开发模式
+    """
+    click.echo("=" * 60)
+    click.echo("MACD 量化交易系统 - HTTP API 服务")
+    click.echo("=" * 60)
+    click.echo(f"  地址:   http://{host}:{port}")
+    click.echo(f"  文档:   http://{host}:{port}/docs")
+    click.echo(f"  重载:   {'开启' if auto_reload else '关闭'}")
+    click.echo(f"  进程数: {workers}")
+    click.echo("=" * 60)
+
+    try:
+        import uvicorn
+    except ImportError:
+        click.echo("错误: 需要安装 uvicorn 和 fastapi", err=True)
+        click.echo("  pip install fastapi uvicorn[standard]", err=True)
+        sys.exit(1)
+
+    uvicorn.run(
+        "src.api.server:app",
+        host=host,
+        port=port,
+        reload=auto_reload,
+        workers=workers if not auto_reload else 1,
+        log_level=log_level,
+    )
+
+
 # ============= 版本信息 =============
 
 @cli.command('info')
