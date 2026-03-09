@@ -658,9 +658,12 @@ def data():
 @click.option('--source', default='baostock',
               type=click.Choice(['tushare', 'akshare', 'baostock']),
               help='数据源')
+@click.option('--freq', default='daily',
+              type=click.Choice(['daily', '5min', '15min', '30min', '60min']),
+              help='数据频率: daily(日线) / 5min / 15min / 30min / 60min')
 @click.pass_context
-def data_sync(ctx, symbols, days, start_date, end_date, source):
-    """同步行情数据"""
+def data_sync(ctx, symbols, days, start_date, end_date, source, freq):
+    """同步行情数据（支持日线和分时数据）"""
     click.echo("=" * 50)
     click.echo("数据同步")
     click.echo("=" * 50)
@@ -668,10 +671,13 @@ def data_sync(ctx, symbols, days, start_date, end_date, source):
     try:
         symbol_list = [s.strip() for s in symbols.split(',')]
         
+        # 分时数据默认只同步 5 天
+        default_days = days if freq == 'daily' else min(days, 5)
+        
         if start_date:
             start = datetime.strptime(start_date, '%Y-%m-%d')
         else:
-            start = datetime.now() - timedelta(days=days)
+            start = datetime.now() - timedelta(days=default_days)
         
         if end_date:
             end = datetime.strptime(end_date, '%Y-%m-%d')
@@ -679,10 +685,20 @@ def data_sync(ctx, symbols, days, start_date, end_date, source):
             end = datetime.now()
         
         click.echo(f"数据源: {source}")
-        click.echo(f"股票: {symbol_list}")
+        click.echo(f"频率:   {freq}")
+        click.echo(f"股票:   {symbol_list}")
         click.echo(f"日期范围: {start.date()} ~ {end.date()}")
         
-        from src.data.market import MarketDataService, DataSource
+        from src.data.market import MarketDataService, DataSource, Frequency
+        
+        freq_map = {
+            'daily': Frequency.DAILY,
+            '5min': Frequency.MIN_5,
+            '15min': Frequency.MIN_15,
+            '30min': Frequency.MIN_30,
+            '60min': Frequency.MIN_60,
+        }
+        frequency = freq_map[freq]
         
         if source == 'tushare':
             data_source = DataSource.TUSHARE
@@ -713,7 +729,8 @@ def data_sync(ctx, symbols, days, start_date, end_date, source):
                 symbols=symbol_list,
                 start_date=start,
                 end_date=end,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                frequency=frequency
             )
             bar.update(100 - last_progress)
         
@@ -743,23 +760,45 @@ def data_info(ctx, symbol):
         from src.data.market import MarketDataService, DataSource
         
         service = MarketDataService(source=DataSource.LOCAL)
+        
+        # 日线数据统计
         stats = service.get_data_stats(symbol)
         
-        if not stats:
+        if stats:
+            click.echo("=" * 60)
+            click.echo("日线数据")
+            click.echo("=" * 60)
+            click.echo(f"{'股票代码':<15} {'数据条数':<10} {'开始日期':<12} {'结束日期':<12}")
+            click.echo("-" * 60)
+            for item in stats:
+                click.echo(
+                    f"{item['symbol']:<15} "
+                    f"{item['count']:<10} "
+                    f"{item['start_date']:<12} "
+                    f"{item['end_date']:<12}"
+                )
+        
+        # 分时数据统计
+        minute_stats = service.get_minute_stats(symbol)
+        
+        if minute_stats:
+            click.echo("")
+            click.echo("=" * 70)
+            click.echo("分时数据")
+            click.echo("=" * 70)
+            click.echo(f"{'股票代码':<12} {'频率':<8} {'数据条数':<10} {'开始时间':<20} {'结束时间':<20}")
+            click.echo("-" * 70)
+            for item in minute_stats:
+                click.echo(
+                    f"{item['symbol']:<12} "
+                    f"{item['frequency']:<8} "
+                    f"{item['count']:<10} "
+                    f"{item['start_time']:<20} "
+                    f"{item['end_time']:<20}"
+                )
+        
+        if not stats and not minute_stats:
             click.echo("暂无数据")
-            return
-        
-        click.echo("=" * 60)
-        click.echo(f"{'股票代码':<15} {'数据条数':<10} {'开始日期':<12} {'结束日期':<12}")
-        click.echo("=" * 60)
-        
-        for item in stats:
-            click.echo(
-                f"{item['symbol']:<15} "
-                f"{item['count']:<10} "
-                f"{item['start_date']:<12} "
-                f"{item['end_date']:<12}"
-            )
         
     except Exception as e:
         click.echo(f"查询失败: {e}", err=True)
@@ -984,6 +1023,105 @@ def config_cmd(ctx, show, init, output_path):
     except Exception as e:
         click.echo(f"操作失败: {e}", err=True)
         sys.exit(1)
+
+
+# ============= client 命令 (交互式客户端) =============
+
+@cli.command('client')
+@click.option('--server', default='localhost:8000',
+              help='API 服务地址 (host:port)')
+@click.pass_context
+def client(ctx, server):
+    """以交互式客户端连接到 API 服务
+
+    \b
+    连接到运行中的 HTTP API 服务，在终端中持续发送指令。
+    需要先通过 serve 命令启动服务。
+
+    \b
+    内置命令:
+      health        检查服务状态
+      strategies    列出可用策略
+      analyze       分析标的
+      backtest      运行回测
+      monitor       监控管理 (start/stop/status)
+      status        查看监控状态
+      sync          同步数据 (支持分时)
+      data          查看数据信息
+      help          显示帮助
+      exit          退出
+
+    \b
+    示例:
+      python -m src.main client                        # 连接 localhost:8000
+      python -m src.main client --server 10.0.0.1:9000 # 连接远程服务
+
+    \b
+    交互示例:
+      macd> analyze 000001.SZ --strategy macd --days 180
+      macd> backtest 002050.SZ --start 2024-01-01 --end 2025-01-01
+      macd> monitor start 000001.SZ,002050.SZ --interval 60
+      macd> status
+    """
+    from src.cli.client import start_client
+    start_client(server)
+
+
+# ============= serve 命令 (HTTP API 服务) =============
+
+@cli.command('serve')
+@click.option('-H', '--host', default='0.0.0.0', help='监听地址')
+@click.option('-p', '--port', default=8000, type=int, help='监听端口')
+@click.option('--reload', 'auto_reload', is_flag=True, help='开发模式，代码变更自动重载')
+@click.option('--workers', default=1, type=int, help='工作进程数')
+@click.option('--log-level', 'log_level', default='info',
+              type=click.Choice(['debug', 'info', 'warning', 'error']),
+              help='日志级别')
+@click.pass_context
+def serve(ctx, host, port, auto_reload, workers, log_level):
+    """以 HTTP API 服务形式启动系统
+
+    \b
+    提供 RESTful API 接口，支持:
+      - POST /api/analyze       分析标的
+      - POST /api/backtest      运行回测
+      - POST /api/monitor/start 启动监控
+      - POST /api/monitor/stop  停止监控
+      - GET  /api/monitor/status 监控状态
+      - POST /api/data/sync     同步数据 (支持分时)
+      - GET  /api/data/info     数据统计
+      - GET  /api/strategies    策略列表
+      - GET  /api/health        健康检查
+
+    \b
+    示例:
+      python -m src.main serve                    # 默认 0.0.0.0:8000
+      python -m src.main serve -p 9000 --reload   # 开发模式
+    """
+    click.echo("=" * 60)
+    click.echo("MACD 量化交易系统 - HTTP API 服务")
+    click.echo("=" * 60)
+    click.echo(f"  地址:   http://{host}:{port}")
+    click.echo(f"  文档:   http://{host}:{port}/docs")
+    click.echo(f"  重载:   {'开启' if auto_reload else '关闭'}")
+    click.echo(f"  进程数: {workers}")
+    click.echo("=" * 60)
+
+    try:
+        import uvicorn
+    except ImportError:
+        click.echo("错误: 需要安装 uvicorn 和 fastapi", err=True)
+        click.echo("  pip install fastapi uvicorn[standard]", err=True)
+        sys.exit(1)
+
+    uvicorn.run(
+        "src.api.server:app",
+        host=host,
+        port=port,
+        reload=auto_reload,
+        workers=workers if not auto_reload else 1,
+        log_level=log_level,
+    )
 
 
 # ============= 版本信息 =============

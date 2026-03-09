@@ -22,12 +22,22 @@ class DataSource(Enum):
     LOCAL = "local"
 
 
+class Frequency(Enum):
+    """数据频率"""
+    DAILY = "daily"
+    MIN_5 = "5min"
+    MIN_15 = "15min"
+    MIN_30 = "30min"
+    MIN_60 = "60min"
+
+
 class BaseDataProvider(ABC):
     """数据提供者基类"""
     
     @abstractmethod
     def fetch(self, symbol: str, start_date: datetime, 
-              end_date: datetime) -> pd.DataFrame:
+              end_date: datetime,
+              frequency: Frequency = Frequency.DAILY) -> pd.DataFrame:
         """
         获取历史数据
         
@@ -35,6 +45,7 @@ class BaseDataProvider(ABC):
             symbol: 股票代码
             start_date: 开始日期
             end_date: 结束日期
+            frequency: 数据频率 (daily/5min/15min/30min/60min)
         
         Returns:
             pd.DataFrame: OHLCV 数据
@@ -74,7 +85,8 @@ class TushareProvider(BaseDataProvider):
         return self._api
     
     def fetch(self, symbol: str, start_date: datetime, 
-              end_date: datetime) -> pd.DataFrame:
+              end_date: datetime,
+              frequency: Frequency = Frequency.DAILY) -> pd.DataFrame:
         """获取历史数据"""
         api = self._get_api()
         
@@ -82,31 +94,62 @@ class TushareProvider(BaseDataProvider):
         start_str = start_date.strftime('%Y%m%d')
         end_str = end_date.strftime('%Y%m%d')
         
-        # 获取日线数据
-        df = api.daily(
-            ts_code=symbol,
-            start_date=start_str,
-            end_date=end_str
-        )
+        if frequency == Frequency.DAILY:
+            # 获取日线数据
+            df = api.daily(
+                ts_code=symbol,
+                start_date=start_str,
+                end_date=end_str
+            )
+        else:
+            # 分钟级数据: Tushare 需要积分权限
+            freq_map = {
+                Frequency.MIN_5: '5min',
+                Frequency.MIN_15: '15min',
+                Frequency.MIN_30: '30min',
+                Frequency.MIN_60: '60min',
+            }
+            df = api.stk_mins(
+                ts_code=symbol,
+                start_date=start_str,
+                end_date=end_str,
+                freq=freq_map[frequency],
+            )
         
         if df is None or df.empty:
             return pd.DataFrame()
         
         # 标准化列名
-        df = df.rename(columns={
-            'ts_code': 'symbol',
-            'trade_date': 'date',
-            'vol': 'volume',
-            'amount': 'amount'
-        })
+        if frequency == Frequency.DAILY:
+            df = df.rename(columns={
+                'ts_code': 'symbol',
+                'trade_date': 'date',
+                'vol': 'volume',
+                'amount': 'amount'
+            })
+            df['date'] = pd.to_datetime(df['date'])
+        else:
+            df = df.rename(columns={
+                'ts_code': 'symbol',
+                'trade_time': 'datetime',
+                'vol': 'volume',
+            })
+            df['datetime'] = pd.to_datetime(df['datetime'])
         
-        # 转换日期类型
-        df['date'] = pd.to_datetime(df['date'])
+        # 按时间升序排列
+        sort_col = 'date' if frequency == Frequency.DAILY else 'datetime'
+        df = df.sort_values(sort_col).reset_index(drop=True)
         
-        # 按日期升序排列
-        df = df.sort_values('date').reset_index(drop=True)
-        
-        return df[['symbol', 'date', 'open', 'high', 'low', 'close', 'volume', 'amount']]
+        if frequency == Frequency.DAILY:
+            return df[['symbol', 'date', 'open', 'high', 'low', 'close', 'volume', 'amount']]
+        else:
+            cols = ['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume']
+            if 'amount' in df.columns:
+                cols.append('amount')
+            else:
+                df['amount'] = 0.0
+                cols.append('amount')
+            return df[cols]
     
     def fetch_realtime(self, symbol: str) -> Dict[str, Any]:
         """获取实时行情"""
@@ -133,7 +176,8 @@ class AkshareProvider(BaseDataProvider):
     """AKShare 数据提供者"""
     
     def fetch(self, symbol: str, start_date: datetime, 
-              end_date: datetime) -> pd.DataFrame:
+              end_date: datetime,
+              frequency: Frequency = Frequency.DAILY) -> pd.DataFrame:
         """获取历史数据"""
         try:
             import akshare as ak
@@ -141,38 +185,54 @@ class AkshareProvider(BaseDataProvider):
             raise ImportError("请安装 akshare: pip install akshare")
         
         # AKShare 使用不同的股票代码格式
-        # 转换: 000001.SZ -> sz000001
         code = symbol.split('.')[0]
-        market = symbol.split('.')[1].lower()
-        ak_symbol = f"{market}{code}"
         
-        # 获取日线数据
-        df = ak.stock_zh_a_hist(
-            symbol=code,
-            period="daily",
-            start_date=start_date.strftime('%Y%m%d'),
-            end_date=end_date.strftime('%Y%m%d'),
-            adjust="qfq"  # 前复权
-        )
-        
-        if df is None or df.empty:
-            return pd.DataFrame()
-        
-        # 标准化列名
-        df = df.rename(columns={
-            '日期': 'date',
-            '开盘': 'open',
-            '最高': 'high',
-            '最低': 'low',
-            '收盘': 'close',
-            '成交量': 'volume',
-            '成交额': 'amount'
-        })
-        
-        df['symbol'] = symbol
-        df['date'] = pd.to_datetime(df['date'])
-        
-        return df[['symbol', 'date', 'open', 'high', 'low', 'close', 'volume', 'amount']]
+        if frequency == Frequency.DAILY:
+            # 获取日线数据
+            df = ak.stock_zh_a_hist(
+                symbol=code,
+                period="daily",
+                start_date=start_date.strftime('%Y%m%d'),
+                end_date=end_date.strftime('%Y%m%d'),
+                adjust="qfq"
+            )
+            
+            if df is None or df.empty:
+                return pd.DataFrame()
+            
+            df = df.rename(columns={
+                '日期': 'date', '开盘': 'open', '最高': 'high',
+                '最低': 'low', '收盘': 'close', '成交量': 'volume', '成交额': 'amount'
+            })
+            df['symbol'] = symbol
+            df['date'] = pd.to_datetime(df['date'])
+            return df[['symbol', 'date', 'open', 'high', 'low', 'close', 'volume', 'amount']]
+        else:
+            # 分时数据
+            freq_map = {
+                Frequency.MIN_5: '5',
+                Frequency.MIN_15: '15',
+                Frequency.MIN_30: '30',
+                Frequency.MIN_60: '60',
+            }
+            df = ak.stock_zh_a_hist_min_em(
+                symbol=code,
+                period=freq_map[frequency],
+                start_date=start_date.strftime('%Y-%m-%d %H:%M:%S'),
+                end_date=end_date.strftime('%Y-%m-%d %H:%M:%S'),
+                adjust="qfq",
+            )
+            
+            if df is None or df.empty:
+                return pd.DataFrame()
+            
+            df = df.rename(columns={
+                '时间': 'datetime', '开盘': 'open', '最高': 'high',
+                '最低': 'low', '收盘': 'close', '成交量': 'volume', '成交额': 'amount'
+            })
+            df['symbol'] = symbol
+            df['datetime'] = pd.to_datetime(df['datetime'])
+            return df[['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume', 'amount']]
     
     def fetch_realtime(self, symbol: str) -> Dict[str, Any]:
         """获取实时行情"""
@@ -243,7 +303,8 @@ class BaostockProvider(BaseDataProvider):
         return f"{market.lower()}.{code}"
     
     def fetch(self, symbol: str, start_date: datetime, 
-              end_date: datetime) -> pd.DataFrame:
+              end_date: datetime,
+              frequency: Frequency = Frequency.DAILY) -> pd.DataFrame:
         """获取历史数据"""
         self._login()
         
@@ -252,13 +313,26 @@ class BaostockProvider(BaseDataProvider):
         # 转换股票代码
         bs_symbol = self._convert_symbol(symbol)
         
-        # 获取日线数据
+        # 频率映射
+        if frequency == Frequency.DAILY:
+            bs_freq = "d"
+            fields = "date,open,high,low,close,volume,amount"
+        else:
+            freq_map = {
+                Frequency.MIN_5: "5",
+                Frequency.MIN_15: "15",
+                Frequency.MIN_30: "30",
+                Frequency.MIN_60: "60",
+            }
+            bs_freq = freq_map[frequency]
+            fields = "time,open,high,low,close,volume,amount"
+        
         rs = bs.query_history_k_data_plus(
             bs_symbol,
-            "date,open,high,low,close,volume,amount",
+            fields,
             start_date=start_date.strftime('%Y-%m-%d'),
             end_date=end_date.strftime('%Y-%m-%d'),
-            frequency="d",
+            frequency=bs_freq,
             adjustflag="2"  # 前复权
         )
         
@@ -273,19 +347,22 @@ class BaostockProvider(BaseDataProvider):
         if not data_list:
             return pd.DataFrame()
         
-        df = pd.DataFrame(data_list, columns=['date', 'open', 'high', 'low', 'close', 'volume', 'amount'])
+        col_names = fields.split(',')
+        df = pd.DataFrame(data_list, columns=col_names)
         
         # 转换数据类型
         df['symbol'] = symbol
-        df['date'] = pd.to_datetime(df['date'])
-        df['open'] = pd.to_numeric(df['open'], errors='coerce')
-        df['high'] = pd.to_numeric(df['high'], errors='coerce')
-        df['low'] = pd.to_numeric(df['low'], errors='coerce')
-        df['close'] = pd.to_numeric(df['close'], errors='coerce')
-        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-        df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
+        for col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        return df[['symbol', 'date', 'open', 'high', 'low', 'close', 'volume', 'amount']]
+        if frequency == Frequency.DAILY:
+            df['date'] = pd.to_datetime(df['date'])
+            return df[['symbol', 'date', 'open', 'high', 'low', 'close', 'volume', 'amount']]
+        else:
+            # baostock 分钟线 time 格式: 20240101150000000
+            df['datetime'] = pd.to_datetime(df['time'].str[:14], format='%Y%m%d%H%M%S')
+            return df[['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume', 'amount']]
     
     def fetch_realtime(self, symbol: str) -> Dict[str, Any]:
         """获取实时行情（BaoStock 不支持实时行情，返回最新日线数据）"""
@@ -420,10 +497,71 @@ class MarketDataService:
         provider = self._get_provider()
         return provider.fetch_realtime(symbol)
     
+    def get_minute_data(self, symbol: str,
+                        frequency: Frequency = Frequency.MIN_5,
+                        start_date: datetime = None,
+                        end_date: datetime = None,
+                        limit: int = None) -> pd.DataFrame:
+        """
+        获取分时数据
+        
+        Args:
+            symbol: 股票代码
+            frequency: 数据频率
+            start_date: 开始时间
+            end_date: 结束时间
+            limit: 返回条数限制
+        """
+        conn = sqlite3.connect(self.db_path)
+        
+        query = "SELECT * FROM ohlcv_minute WHERE symbol = ? AND frequency = ?"
+        params: list = [symbol, frequency.value]
+        
+        if start_date:
+            query += " AND datetime >= ?"
+            params.append(start_date.strftime('%Y-%m-%d %H:%M:%S'))
+        if end_date:
+            query += " AND datetime <= ?"
+            params.append(end_date.strftime('%Y-%m-%d %H:%M:%S'))
+        
+        query += " ORDER BY datetime ASC"
+        
+        if limit:
+            query += f" LIMIT {limit}"
+        
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        
+        if not df.empty:
+            df['datetime'] = pd.to_datetime(df['datetime'])
+        return df
+    
+    def get_minute_stats(self, symbol: Optional[str] = None) -> List[Dict]:
+        """获取分时数据统计信息"""
+        conn = sqlite3.connect(self.db_path)
+        
+        query = """
+            SELECT symbol, frequency, COUNT(*) as count,
+                   MIN(datetime) as start_time, MAX(datetime) as end_time
+            FROM ohlcv_minute
+        """
+        if symbol:
+            query += " WHERE symbol = ?"
+            params = (symbol,)
+        else:
+            params = ()
+        
+        query += " GROUP BY symbol, frequency ORDER BY symbol, frequency"
+        
+        df = pd.read_sql_query(query, conn, params=params)
+        conn.close()
+        return df.to_dict('records')
+    
     def sync(self, symbols: List[str] = None,
              start_date: datetime = None,
              end_date: datetime = None,
-             progress_callback: callable = None) -> int:
+             progress_callback: callable = None,
+             frequency: Frequency = Frequency.DAILY) -> int:
         """
         同步数据到本地
         
@@ -432,6 +570,7 @@ class MarketDataService:
             start_date: 开始日期
             end_date: 结束日期
             progress_callback: 进度回调函数
+            frequency: 数据频率 (daily/5min/15min/30min/60min)
         
         Returns:
             int: 同步的记录数
@@ -443,14 +582,18 @@ class MarketDataService:
             logger.warning("无股票需要同步")
             return 0
         
-        start = start_date or datetime.now() - timedelta(days=365)
+        # 分时数据默认只同步最近 5 天
+        if frequency != Frequency.DAILY:
+            start = start_date or datetime.now() - timedelta(days=5)
+        else:
+            start = start_date or datetime.now() - timedelta(days=365)
         end = end_date or datetime.now()
         
         total_count = 0
         
         for i, symbol in enumerate(symbols):
             try:
-                count = self._sync_symbol(symbol, start, end)
+                count = self._sync_symbol(symbol, start, end, frequency=frequency)
                 total_count += count
                 
                 if progress_callback:
@@ -459,7 +602,8 @@ class MarketDataService:
             except Exception as e:
                 logger.error(f"同步失败: {symbol}, error={e}")
         
-        logger.info(f"同步完成: {len(symbols)} 只股票, {total_count} 条数据")
+        freq_label = frequency.value
+        logger.info(f"同步完成 [{freq_label}]: {len(symbols)} 只股票, {total_count} 条数据")
         return total_count
     
     def get_data_stats(self, symbol: str = None) -> List[Dict]:
@@ -556,9 +700,28 @@ class MarketDataService:
             )
         ''')
         
+        # 分时数据表
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS ohlcv_minute (
+                symbol TEXT NOT NULL,
+                datetime TEXT NOT NULL,
+                frequency TEXT NOT NULL,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume INTEGER,
+                amount REAL,
+                PRIMARY KEY (symbol, datetime, frequency)
+            )
+        ''')
+        
         # 创建索引
         conn.execute('CREATE INDEX IF NOT EXISTS idx_symbol ON ohlcv(symbol)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_date ON ohlcv(date)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_minute_symbol ON ohlcv_minute(symbol)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_minute_dt ON ohlcv_minute(datetime)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_minute_freq ON ohlcv_minute(frequency)')
         
         conn.commit()
         conn.close()
@@ -629,43 +792,54 @@ class MarketDataService:
     
     def _sync_symbol(self, symbol: str,
                      start_date: datetime = None,
-                     end_date: datetime = None) -> int:
+                     end_date: datetime = None,
+                     frequency: Frequency = Frequency.DAILY) -> int:
         """同步单个股票数据"""
         start = start_date or datetime.now() - timedelta(days=365)
         end = end_date or datetime.now()
         
         # 获取数据
         provider = self._get_provider()
-        df = provider.fetch(symbol, start, end)
+        df = provider.fetch(symbol, start, end, frequency=frequency)
         
         if df.empty:
-            logger.warning(f"未获取到数据: {symbol}")
+            logger.warning(f"未获取到数据: {symbol} [{frequency.value}]")
             return 0
         
-        # 保存到数据库
         conn = sqlite3.connect(self.db_path)
         
-        # 使用 REPLACE 处理重复数据
-        for _, row in df.iterrows():
-            conn.execute('''
-                INSERT OR REPLACE INTO ohlcv 
-                (symbol, date, open, high, low, close, volume, amount)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                row['symbol'],
-                row['date'].strftime('%Y-%m-%d'),
-                row['open'],
-                row['high'],
-                row['low'],
-                row['close'],
-                row['volume'],
-                row.get('amount', 0)
-            ))
+        if frequency == Frequency.DAILY:
+            # 日线存 ohlcv 表
+            for _, row in df.iterrows():
+                conn.execute('''
+                    INSERT OR REPLACE INTO ohlcv 
+                    (symbol, date, open, high, low, close, volume, amount)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    row['symbol'],
+                    row['date'].strftime('%Y-%m-%d'),
+                    row['open'], row['high'], row['low'], row['close'],
+                    row['volume'], row.get('amount', 0)
+                ))
+        else:
+            # 分时存 ohlcv_minute 表
+            for _, row in df.iterrows():
+                conn.execute('''
+                    INSERT OR REPLACE INTO ohlcv_minute
+                    (symbol, datetime, frequency, open, high, low, close, volume, amount)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    row['symbol'],
+                    row['datetime'].strftime('%Y-%m-%d %H:%M:%S'),
+                    frequency.value,
+                    row['open'], row['high'], row['low'], row['close'],
+                    row['volume'], row.get('amount', 0)
+                ))
         
         conn.commit()
         conn.close()
         
-        logger.info(f"同步完成: {symbol}, {len(df)} 条数据")
+        logger.info(f"同步完成: {symbol} [{frequency.value}], {len(df)} 条数据")
         return len(df)
     
     def _get_tracked_symbols(self) -> List[str]:
