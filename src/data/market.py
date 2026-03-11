@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from enum import Enum
 import sqlite3
+import threading
 import pandas as pd
 import logging
 
@@ -365,16 +366,41 @@ class BaostockProvider(BaseDataProvider):
             return df[['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume', 'amount']]
     
     def fetch_realtime(self, symbol: str) -> Dict[str, Any]:
-        """获取实时行情（BaoStock 不支持实时行情，返回最新日线数据）"""
+        """
+        获取实时行情
+        
+        优先使用 akshare 获取真实实时价格；
+        akshare 不可用时降级为最新日线数据（非实盘场景）。
+        """
+        try:
+            import akshare as ak
+            code = symbol.split('.')[0]
+            df = ak.stock_zh_a_spot_em()
+            row = df[df['代码'] == code]
+            if not row.empty:
+                row = row.iloc[0]
+                return {
+                    'symbol': symbol,
+                    'price': float(row['最新价']),
+                    'open': float(row['今开']),
+                    'high': float(row['最高']),
+                    'low': float(row['最低']),
+                    'volume': float(row['成交量']),
+                    'source': 'realtime',
+                }
+        except Exception as e:
+            logger.warning(f"akshare 实时行情获取失败，降级为日线数据: {e}")
+        
+        # 降级：返回最新日线收盘价（注意：非实时）
         end = datetime.now()
         start = end - timedelta(days=7)
-        
         df = self.fetch(symbol, start, end)
         
         if df.empty:
             return {}
         
         row = df.iloc[-1]
+        logger.warning(f"{symbol} 使用日线收盘价作为实时价格（非实时）")
         return {
             'symbol': symbol,
             'price': row['close'],
@@ -382,6 +408,7 @@ class BaostockProvider(BaseDataProvider):
             'high': row['high'],
             'low': row['low'],
             'volume': row['volume'],
+            'source': 'daily_close',
         }
 
 
@@ -429,6 +456,9 @@ class MarketDataService:
         
         # 数据提供者
         self._provider: BaseDataProvider = None
+        
+        # SQLite 并发写入锁
+        self._db_lock = threading.Lock()
         
         # 初始化数据库
         self._init_db()
@@ -806,38 +836,45 @@ class MarketDataService:
             logger.warning(f"未获取到数据: {symbol} [{frequency.value}]")
             return 0
         
-        conn = sqlite3.connect(self.db_path)
-        
-        if frequency == Frequency.DAILY:
-            # 日线存 ohlcv 表
-            for _, row in df.iterrows():
-                conn.execute('''
-                    INSERT OR REPLACE INTO ohlcv 
-                    (symbol, date, open, high, low, close, volume, amount)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    row['symbol'],
-                    row['date'].strftime('%Y-%m-%d'),
-                    row['open'], row['high'], row['low'], row['close'],
-                    row['volume'], row.get('amount', 0)
-                ))
-        else:
-            # 分时存 ohlcv_minute 表
-            for _, row in df.iterrows():
-                conn.execute('''
-                    INSERT OR REPLACE INTO ohlcv_minute
-                    (symbol, datetime, frequency, open, high, low, close, volume, amount)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    row['symbol'],
-                    row['datetime'].strftime('%Y-%m-%d %H:%M:%S'),
-                    frequency.value,
-                    row['open'], row['high'], row['low'], row['close'],
-                    row['volume'], row.get('amount', 0)
-                ))
-        
-        conn.commit()
-        conn.close()
+        with self._db_lock:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                if frequency == Frequency.DAILY:
+                    # 日线存 ohlcv 表 — 批量写入
+                    records = [
+                        (
+                            row['symbol'],
+                            row['date'].strftime('%Y-%m-%d'),
+                            row['open'], row['high'], row['low'], row['close'],
+                            row['volume'], row.get('amount', 0)
+                        )
+                        for _, row in df.iterrows()
+                    ]
+                    conn.executemany('''
+                        INSERT OR REPLACE INTO ohlcv 
+                        (symbol, date, open, high, low, close, volume, amount)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', records)
+                else:
+                    # 分时存 ohlcv_minute 表 — 批量写入
+                    records = [
+                        (
+                            row['symbol'],
+                            row['datetime'].strftime('%Y-%m-%d %H:%M:%S'),
+                            frequency.value,
+                            row['open'], row['high'], row['low'], row['close'],
+                            row['volume'], row.get('amount', 0)
+                        )
+                        for _, row in df.iterrows()
+                    ]
+                    conn.executemany('''
+                        INSERT OR REPLACE INTO ohlcv_minute
+                        (symbol, datetime, frequency, open, high, low, close, volume, amount)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', records)
+                conn.commit()
+            finally:
+                conn.close()
         
         logger.info(f"同步完成: {symbol} [{frequency.value}], {len(df)} 条数据")
         return len(df)

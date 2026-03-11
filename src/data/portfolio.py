@@ -241,13 +241,19 @@ class PortfolioManager:
         buy_trades = [t for t in trades if t.side == OrderSide.BUY]
         sell_trades = [t for t in trades if t.side == OrderSide.SELL]
         
+        def _trade_amount(t) -> float:
+            """兼容 amount 未赋值的旧数据"""
+            if t.amount and t.amount > 0:
+                return t.amount
+            return t.price * t.quantity
+
         return {
             'date': target.isoformat(),
             'trade_count': len(trades),
             'buy_count': len(buy_trades),
             'sell_count': len(sell_trades),
-            'buy_amount': sum(t.amount for t in buy_trades),
-            'sell_amount': sum(t.amount for t in sell_trades),
+            'buy_amount': sum(_trade_amount(t) for t in buy_trades),
+            'sell_amount': sum(_trade_amount(t) for t in sell_trades),
             'commission': sum(t.commission for t in trades),
         }
     

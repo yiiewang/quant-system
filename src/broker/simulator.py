@@ -317,6 +317,7 @@ class SimulatedExecutor(BaseExecutor):
             side=order.side,
             quantity=order.quantity,
             price=exec_price,
+            amount=exec_price * order.quantity,
             commission=commission
         )
         self._trades.append(trade)

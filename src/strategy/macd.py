@@ -92,7 +92,7 @@ class MACDStrategy(BaseStrategy):
     
     def calculate_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        计算 MACD 指标
+        计算 MACD 指标（使用统一的 IndicatorCalculator）
         
         Args:
             data: OHLCV 数据
@@ -103,33 +103,27 @@ class MACDStrategy(BaseStrategy):
                 - ema_slow: 慢速EMA
                 - macd: MACD线 (DIF)
                 - signal: 信号线 (DEA)
-                - histogram: MACD柱 (MACD Bar)
+                - histogram: MACD柱 (MACD Bar, A股惯例乘2)
                 - volume_ma: 成交量均线
                 - volume_ratio: 成交量比率
         """
-        df = data.copy()
+        from src.data.indicator import IndicatorCalculator
+        calc = IndicatorCalculator()
         
         fast = self.params['fast_period']
         slow = self.params['slow_period']
         signal = self.params['signal_period']
         
-        # 计算 EMA
+        # 使用统一指标计算器计算 MACD 和成交量均线
+        df = calc.macd(data, fast_period=fast, slow_period=slow, signal_period=signal)
+        df = calc.volume_ma(df, periods=[20])
+        
+        # EMA 快慢线（供外部参考）
         df['ema_fast'] = df['close'].ewm(span=fast, adjust=False).mean()
         df['ema_slow'] = df['close'].ewm(span=slow, adjust=False).mean()
         
-        # 计算 MACD
-        df['macd'] = df['ema_fast'] - df['ema_slow']  # DIF
-        df['signal'] = df['macd'].ewm(span=signal, adjust=False).mean()  # DEA
-        df['histogram'] = 2 * (df['macd'] - df['signal'])  # MACD Bar (乘2是A股习惯)
-        
-        # 计算成交量指标
-        df['volume_ma'] = df['volume'].rolling(window=20).mean()
-        df['volume_ratio'] = df['volume'] / df['volume_ma']
-        
-        # 计算金叉/死叉信号
-        df['macd_cross'] = 0
-        df.loc[(df['macd'] > df['signal']) & (df['macd'].shift(1) <= df['signal'].shift(1)), 'macd_cross'] = 1  # 金叉
-        df.loc[(df['macd'] < df['signal']) & (df['macd'].shift(1) >= df['signal'].shift(1)), 'macd_cross'] = -1  # 死叉
+        # A股惯例：histogram 乘2（indicator.py 中为标准值，此处覆盖为 A股习惯）
+        df['histogram'] = 2 * (df['macd'] - df['signal'])
         
         # 保存指标值供后续使用
         self.set_indicator('macd', df['macd'].iloc[-1])

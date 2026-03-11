@@ -132,7 +132,7 @@ class WeeklyMACDStrategy(BaseStrategy):
     
     def calculate_macd(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        计算MACD指标
+        计算MACD指标（使用统一的 IndicatorCalculator）
         
         Args:
             data: OHLCV数据
@@ -140,24 +140,25 @@ class WeeklyMACDStrategy(BaseStrategy):
         Returns:
             添加了MACD指标的DataFrame
         """
-        df = data.copy()
+        from src.data.indicator import IndicatorCalculator
+        calc = IndicatorCalculator()
         
         fast = self.params['fast_period']
         slow = self.params['slow_period']
         signal = self.params['signal_period']
         
-        # 计算 EMA
+        df = calc.macd(data, fast_period=fast, slow_period=slow, signal_period=signal)
+        
+        # EMA 快慢线（供外部参考）
         df['ema_fast'] = df['close'].ewm(span=fast, adjust=False).mean()
         df['ema_slow'] = df['close'].ewm(span=slow, adjust=False).mean()
         
-        # 计算 MACD
-        df['macd'] = df['ema_fast'] - df['ema_slow']  # DIF
-        df['signal'] = df['macd'].ewm(span=signal, adjust=False).mean()  # DEA
-        df['histogram'] = 2 * (df['macd'] - df['signal'])  # MACD Bar
+        # A股惯例：histogram 乘2
+        df['histogram'] = 2 * (df['macd'] - df['signal'])
         
         # 金叉/死叉状态
-        df['is_golden'] = df['macd'] > df['signal']  # 金叉状态
-        df['is_death'] = df['macd'] < df['signal']   # 死叉状态
+        df['is_golden'] = df['macd'] > df['signal']
+        df['is_death'] = df['macd'] < df['signal']
         
         # 金叉/死叉信号（转折点）
         df['golden_cross'] = (df['is_golden']) & (~df['is_golden'].shift(1).fillna(False))
