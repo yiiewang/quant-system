@@ -469,7 +469,13 @@ class MarketDataService:
         """
         获取最新行情数据
         
-        优先从缓存获取，缓存过期则从数据库获取
+        流程：
+        ① 检查内存缓存（TTL=60s）
+        ② 缓存未命中 → 查 SQLite
+        ③ 数据不足 → 调 Provider.fetch() 拉取远端
+        ④ 更新内存缓存
+        ⑤ 返回 DataFrame
+        ⑥ 异步后台将缓存数据写入 SQLite（不阻塞查询链路）
         
         Args:
             symbol: 股票代码
@@ -480,23 +486,87 @@ class MarketDataService:
         """
         cache_key = f"{symbol}_{lookback}"
         
-        # 检查缓存
+        # ① 命中缓存直接返回
         if self._is_cache_valid(cache_key):
             return self._cache[cache_key]
         
-        # 从数据库获取
+        # ② 查 SQLite
         data = self._query_from_db(symbol, limit=lookback)
         
-        # 如果数据不足，尝试同步
+        # ③ 数据不足 → 拉取远端
         if len(data) < lookback:
-            self._sync_symbol(symbol)
-            data = self._query_from_db(symbol, limit=lookback)
+            provider = self._get_provider()
+            end = datetime.now()
+            start = end - timedelta(days=max(lookback * 2, 365))
+            fetched = provider.fetch(symbol, start, end)
+            if not fetched.empty:
+                data = fetched.tail(lookback)
+                # ⑥ 异步写入 SQLite，不阻塞当前返回
+                threading.Thread(
+                    target=self._async_persist,
+                    args=(symbol, fetched),
+                    daemon=True
+                ).start()
         
-        # 更新缓存
+        # ④ 更新缓存
         self._cache[cache_key] = data
         self._cache_time[cache_key] = datetime.now()
         
+        # ⑤ 返回
         return data
+
+    def _async_persist(self, symbol: str, df: pd.DataFrame,
+                       frequency: 'Frequency' = None) -> None:
+        """
+        异步将 DataFrame 持久化到 SQLite。
+        由后台线程调用，异常只记录日志不向上抛。
+        """
+        from src.data.market import Frequency as _Freq
+        freq = frequency or _Freq.DAILY
+        try:
+            table = 'ohlcv' if freq == _Freq.DAILY else 'ohlcv_minute'
+            if freq == _Freq.DAILY:
+                records = [
+                    (
+                        row['symbol'],
+                        row['date'].strftime('%Y-%m-%d'),
+                        row['open'], row['high'], row['low'], row['close'],
+                        row['volume'], row.get('amount', 0)
+                    )
+                    for _, row in df.iterrows()
+                ]
+                sql = '''
+                    INSERT OR REPLACE INTO ohlcv
+                    (symbol, date, open, high, low, close, volume, amount)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                '''
+            else:
+                records = [
+                    (
+                        row['symbol'],
+                        row['datetime'].strftime('%Y-%m-%d %H:%M:%S'),
+                        freq.value,
+                        row['open'], row['high'], row['low'], row['close'],
+                        row['volume'], row.get('amount', 0)
+                    )
+                    for _, row in df.iterrows()
+                ]
+                sql = '''
+                    INSERT OR REPLACE INTO ohlcv_minute
+                    (symbol, datetime, frequency, open, high, low, close, volume, amount)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                '''
+            import sqlite3 as _sqlite3
+            with self._db_lock:
+                conn = _sqlite3.connect(self.db_path)
+                try:
+                    conn.executemany(sql, records)
+                    conn.commit()
+                    logger.debug(f"异步持久化完成: {symbol} {len(records)} 条 → {table}")
+                finally:
+                    conn.close()
+        except Exception as e:
+            logger.error(f"异步持久化失败: {symbol} — {e}")
     
     def get_history(self, symbol: str, 
                     start_date: datetime,
