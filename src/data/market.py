@@ -451,15 +451,17 @@ class MarketDataService:
         self.db_path = db_path
         self.config = config or {}
         
-        # 内存缓存（get_latest 用，key=symbol_lookback）
+        # get_latest 缓存（key=symbol_lookback，TTL=60s，LRU 最多200条）
         self._cache: Dict[str, pd.DataFrame] = {}
         self._cache_time: Dict[str, datetime] = {}
-        self._cache_ttl = 60  # 缓存有效期（秒）
+        self._cache_ttl = 60
+        self._cache_maxsize = 200  # 超出时淘汰最旧的条目
 
-        # get_history 缓存（key=(symbol, start_str, end_str)）
+        # get_history 缓存（key=(symbol, start_str, end_str)，TTL=5min，LRU 最多100条）
         self._history_cache: Dict[tuple, pd.DataFrame] = {}
         self._history_cache_time: Dict[tuple, datetime] = {}
-        self._history_cache_ttl = 300  # 5分钟，回测场景读多写少
+        self._history_cache_ttl = 300
+        self._history_cache_maxsize = 100
         
         # 数据提供者
         self._provider: BaseDataProvider = None
@@ -519,9 +521,8 @@ class MarketDataService:
                 # ⑥ 入队异步写入 SQLite，不阻塞当前返回
                 self._persist_queue.put((symbol, fetched, None))
         
-        # ④ 更新缓存
-        self._cache[cache_key] = data
-        self._cache_time[cache_key] = datetime.now()
+        # ④ 更新缓存（LRU 淘汰保护）
+        self._set_cache(cache_key, data)
         
         # ⑤ 返回
         return data
@@ -626,9 +627,8 @@ class MarketDataService:
         # 查 SQLite
         data = self._query_from_db(symbol, start_date=start_date, end_date=end_date)
 
-        # 更新 history 缓存
-        self._history_cache[cache_key] = data
-        self._history_cache_time[cache_key] = datetime.now()
+        # 更新 history 缓存（LRU 淘汰保护）
+        self._set_history_cache(cache_key, data)
 
         return data
     
@@ -721,7 +721,8 @@ class MarketDataService:
              start_date: datetime = None,
              end_date: datetime = None,
              progress_callback: callable = None,
-             frequency: Frequency = Frequency.DAILY) -> int:
+             frequency: Frequency = Frequency.DAILY,
+             incremental: bool = True) -> int:
         """
         同步数据到本地
         
@@ -731,6 +732,9 @@ class MarketDataService:
             end_date: 结束日期
             progress_callback: 进度回调函数
             frequency: 数据频率 (daily/5min/15min/30min/60min)
+            incremental: 是否增量同步（默认True）
+                - True: 查本地最新日期，只拉 gap 部分，避免重复拉取
+                - False: 强制全量覆盖指定区间
         
         Returns:
             int: 同步的记录数
@@ -742,17 +746,35 @@ class MarketDataService:
             logger.warning("无股票需要同步")
             return 0
         
-        # 分时数据默认只同步最近 5 天
+        # 默认日期范围
         if frequency != Frequency.DAILY:
-            start = start_date or datetime.now() - timedelta(days=5)
+            default_start = datetime.now() - timedelta(days=5)
         else:
-            start = start_date or datetime.now() - timedelta(days=365)
+            default_start = datetime.now() - timedelta(days=365)
         end = end_date or datetime.now()
         
         total_count = 0
         
         for i, symbol in enumerate(symbols):
             try:
+                if incremental and start_date is None:
+                    # 查本地已有数据的最新日期，从次日开始增量拉取
+                    local_latest = self._get_local_latest_date(symbol, frequency)
+                    if local_latest is not None:
+                        # 已有数据：从最新日期后一天开始
+                        start = local_latest + timedelta(days=1)
+                        if start >= end:
+                            logger.debug(f"已是最新，跳过: {symbol} (local={local_latest.date()})")
+                            if progress_callback:
+                                progress_callback((i + 1) / len(symbols) * 100)
+                            continue
+                        logger.debug(f"增量同步: {symbol} {start.date()} → {end.date()}")
+                    else:
+                        # 本地无数据：全量拉取
+                        start = default_start
+                else:
+                    start = start_date or default_start
+
                 count = self._sync_symbol(symbol, start, end, frequency=frequency)
                 total_count += count
                 
@@ -765,6 +787,34 @@ class MarketDataService:
         freq_label = frequency.value
         logger.info(f"同步完成 [{freq_label}]: {len(symbols)} 只股票, {total_count} 条数据")
         return total_count
+
+    def _get_local_latest_date(self, symbol: str,
+                                frequency: Frequency = Frequency.DAILY) -> Optional[datetime]:
+        """
+        查询本地 SQLite 中某支股票的最新数据日期。
+        无数据时返回 None。
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            if frequency == Frequency.DAILY:
+                cursor = conn.execute(
+                    "SELECT MAX(date) FROM ohlcv WHERE symbol = ?", (symbol,)
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    return datetime.strptime(row[0], '%Y-%m-%d')
+            else:
+                cursor = conn.execute(
+                    "SELECT MAX(datetime) FROM ohlcv_minute WHERE symbol = ? AND frequency = ?",
+                    (symbol, frequency.value)
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    return datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
+        finally:
+            conn.close()
+        return None
+
     
     def get_data_stats(self, symbol: str = None) -> List[Dict]:
         """
@@ -944,17 +994,34 @@ class MarketDataService:
         return self._provider
     
     def _is_cache_valid(self, key: str) -> bool:
-        """检查缓存是否有效"""
+        """检查 get_latest 缓存是否有效"""
         if key not in self._cache:
             return False
-        
         cache_time = self._cache_time.get(key)
         if cache_time is None:
             return False
-        
-        elapsed = (datetime.now() - cache_time).total_seconds()
-        return elapsed < self._cache_ttl
-    
+        return (datetime.now() - cache_time).total_seconds() < self._cache_ttl
+
+    def _set_cache(self, key: str, data: pd.DataFrame) -> None:
+        """写入 get_latest 缓存，超出 maxsize 时淘汰最旧条目"""
+        if key not in self._cache and len(self._cache) >= self._cache_maxsize:
+            oldest_key = min(self._cache_time, key=self._cache_time.get)
+            self._cache.pop(oldest_key, None)
+            self._cache_time.pop(oldest_key, None)
+            logger.debug(f"缓存已满({self._cache_maxsize})，淘汰: {oldest_key}")
+        self._cache[key] = data
+        self._cache_time[key] = datetime.now()
+
+    def _set_history_cache(self, key: tuple, data: pd.DataFrame) -> None:
+        """写入 get_history 缓存，超出 maxsize 时淘汰最旧条目"""
+        if key not in self._history_cache and len(self._history_cache) >= self._history_cache_maxsize:
+            oldest_key = min(self._history_cache_time, key=self._history_cache_time.get)
+            self._history_cache.pop(oldest_key, None)
+            self._history_cache_time.pop(oldest_key, None)
+            logger.debug(f"history 缓存已满({self._history_cache_maxsize})，淘汰: {oldest_key}")
+        self._history_cache[key] = data
+        self._history_cache_time[key] = datetime.now()
+
     def _query_from_db(self, symbol: str, 
                        start_date: datetime = None,
                        end_date: datetime = None,
