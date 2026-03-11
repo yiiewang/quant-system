@@ -9,6 +9,8 @@ from pathlib import Path
 from enum import Enum
 import sqlite3
 import threading
+import queue
+import time
 import pandas as pd
 import logging
 
@@ -449,16 +451,30 @@ class MarketDataService:
         self.db_path = db_path
         self.config = config or {}
         
-        # 内存缓存
+        # 内存缓存（get_latest 用，key=symbol_lookback）
         self._cache: Dict[str, pd.DataFrame] = {}
         self._cache_time: Dict[str, datetime] = {}
         self._cache_ttl = 60  # 缓存有效期（秒）
+
+        # get_history 缓存（key=(symbol, start_str, end_str)）
+        self._history_cache: Dict[tuple, pd.DataFrame] = {}
+        self._history_cache_time: Dict[tuple, datetime] = {}
+        self._history_cache_ttl = 300  # 5分钟，回测场景读多写少
         
         # 数据提供者
         self._provider: BaseDataProvider = None
         
         # SQLite 并发写入锁
         self._db_lock = threading.Lock()
+
+        # 异步持久化队列（单后台写线程消费）
+        self._persist_queue: queue.Queue = queue.Queue()
+        self._persist_worker = threading.Thread(
+            target=self._persist_worker_loop,
+            daemon=True,
+            name="market-persist-worker"
+        )
+        self._persist_worker.start()
         
         # 初始化数据库
         self._init_db()
@@ -495,18 +511,13 @@ class MarketDataService:
         
         # ③ 数据不足 → 拉取远端（LOCAL 模式跳过）
         if len(data) < lookback and self.source != DataSource.LOCAL:
-            provider = self._get_provider()
             end = datetime.now()
             start = end - timedelta(days=max(lookback * 2, 365))
-            fetched = provider.fetch(symbol, start, end)
+            fetched = self._fetch_with_retry(symbol, start, end)
             if not fetched.empty:
                 data = fetched.tail(lookback)
-                # ⑥ 异步写入 SQLite，不阻塞当前返回
-                threading.Thread(
-                    target=self._async_persist,
-                    args=(symbol, fetched),
-                    daemon=True
-                ).start()
+                # ⑥ 入队异步写入 SQLite，不阻塞当前返回
+                self._persist_queue.put((symbol, fetched, None))
         
         # ④ 更新缓存
         self._cache[cache_key] = data
@@ -515,17 +526,32 @@ class MarketDataService:
         # ⑤ 返回
         return data
 
-    def _async_persist(self, symbol: str, df: pd.DataFrame,
-                       frequency: 'Frequency' = None) -> None:
+    def _persist_worker_loop(self) -> None:
         """
-        异步将 DataFrame 持久化到 SQLite。
-        由后台线程调用，异常只记录日志不向上抛。
+        后台单线程写入 Worker。
+        消费 _persist_queue，串行写入 SQLite，避免大量并发写线程。
+        队列元素：(symbol, df, frequency)
         """
-        from src.data.market import Frequency as _Freq
-        freq = frequency or _Freq.DAILY
+        while True:
+            try:
+                item = self._persist_queue.get(timeout=1)
+                symbol, df, frequency = item
+                self._do_persist(symbol, df, frequency)
+                self._persist_queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"persist worker 异常: {e}")
+
+    def _do_persist(self, symbol: str, df: pd.DataFrame,
+                    frequency: 'Frequency' = None) -> None:
+        """
+        执行实际的 SQLite 写入（由 worker 线程调用）。
+        异常只记录日志，不向上抛。
+        """
+        freq = frequency or Frequency.DAILY
         try:
-            table = 'ohlcv' if freq == _Freq.DAILY else 'ohlcv_minute'
-            if freq == _Freq.DAILY:
+            if freq == Frequency.DAILY:
                 records = [
                     (
                         row['symbol'],
@@ -540,6 +566,7 @@ class MarketDataService:
                     (symbol, date, open, high, low, close, volume, amount)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 '''
+                table = 'ohlcv'
             else:
                 records = [
                     (
@@ -556,9 +583,10 @@ class MarketDataService:
                     (symbol, datetime, frequency, open, high, low, close, volume, amount)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 '''
-            import sqlite3 as _sqlite3
+                table = 'ohlcv_minute'
+
             with self._db_lock:
-                conn = _sqlite3.connect(self.db_path)
+                conn = sqlite3.connect(self.db_path)
                 try:
                     conn.executemany(sql, records)
                     conn.commit()
@@ -567,12 +595,13 @@ class MarketDataService:
                     conn.close()
         except Exception as e:
             logger.error(f"异步持久化失败: {symbol} — {e}")
+
     
     def get_history(self, symbol: str, 
                     start_date: datetime,
                     end_date: datetime) -> pd.DataFrame:
         """
-        获取历史数据
+        获取历史数据（带缓存，TTL=5分钟，适合回测反复读同一段数据）
         
         Args:
             symbol: 股票代码
@@ -582,7 +611,26 @@ class MarketDataService:
         Returns:
             pd.DataFrame: OHLCV 数据
         """
-        return self._query_from_db(symbol, start_date=start_date, end_date=end_date)
+        cache_key = (
+            symbol,
+            start_date.strftime('%Y-%m-%d'),
+            end_date.strftime('%Y-%m-%d')
+        )
+        # 检查 history 缓存
+        cached_time = self._history_cache_time.get(cache_key)
+        if cached_time is not None:
+            elapsed = (datetime.now() - cached_time).total_seconds()
+            if elapsed < self._history_cache_ttl:
+                return self._history_cache[cache_key]
+
+        # 查 SQLite
+        data = self._query_from_db(symbol, start_date=start_date, end_date=end_date)
+
+        # 更新 history 缓存
+        self._history_cache[cache_key] = data
+        self._history_cache_time[cache_key] = datetime.now()
+
+        return data
     
     def get_realtime(self, symbol: str) -> Dict[str, Any]:
         """
@@ -595,7 +643,19 @@ class MarketDataService:
             Dict: 实时行情
         """
         provider = self._get_provider()
-        return provider.fetch_realtime(symbol)
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = provider.fetch_realtime(symbol)
+                if result:
+                    return result
+            except Exception as e:
+                last_exc = e
+                logger.warning(f"fetch_realtime 失败: {symbol}, 第{attempt+1}次, error={e}")
+            if attempt < 2:
+                time.sleep(1.0 * (2 ** attempt))
+        logger.error(f"fetch_realtime 多次重试均失败: {symbol}, last_error={last_exc}")
+        return {}
     
     def get_minute_data(self, symbol: str,
                         frequency: Frequency = Frequency.MIN_5,
@@ -777,9 +837,45 @@ class MarketDataService:
         return count
     
     def clear_cache(self) -> None:
-        """清空缓存"""
+        """清空所有内存缓存（get_latest 缓存 + get_history 缓存）"""
         self._cache.clear()
         self._cache_time.clear()
+        self._history_cache.clear()
+        self._history_cache_time.clear()
+
+    def _fetch_with_retry(self, symbol: str, start: datetime, end: datetime,
+                          frequency: Frequency = Frequency.DAILY,
+                          max_retries: int = 3,
+                          base_delay: float = 1.0) -> pd.DataFrame:
+        """
+        带重试的 Provider.fetch 包装。
+        网络抖动时自动重试（指数退避），3次均失败返回空 DataFrame。
+
+        Args:
+            symbol: 股票代码
+            start / end: 日期范围
+            frequency: 数据频率
+            max_retries: 最大重试次数（含第1次）
+            base_delay: 首次重试等待秒数，之后翻倍
+        """
+        provider = self._get_provider()
+        last_exc = None
+        for attempt in range(max_retries):
+            try:
+                df = provider.fetch(symbol, start, end, frequency=frequency)
+                if df is not None and not df.empty:
+                    return df
+                # 返回空 DataFrame 也视为失败，继续重试
+                logger.warning(f"Provider 返回空数据: {symbol}, 第{attempt+1}次")
+            except Exception as e:
+                last_exc = e
+                logger.warning(f"Provider.fetch 失败: {symbol}, 第{attempt+1}次, error={e}")
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                logger.info(f"等待 {delay:.1f}s 后重试...")
+                time.sleep(delay)
+        logger.error(f"Provider.fetch 多次重试均失败: {symbol}, last_error={last_exc}")
+        return pd.DataFrame()
     
     def _init_db(self) -> None:
         """初始化数据库"""
@@ -905,9 +1001,8 @@ class MarketDataService:
         start = start_date or datetime.now() - timedelta(days=365)
         end = end_date or datetime.now()
         
-        # 获取数据
-        provider = self._get_provider()
-        df = provider.fetch(symbol, start, end, frequency=frequency)
+        # 获取数据（带重试）
+        df = self._fetch_with_retry(symbol, start, end, frequency=frequency)
         
         if df.empty:
             logger.warning(f"未获取到数据: {symbol} [{frequency.value}]")
