@@ -493,8 +493,8 @@ class MarketDataService:
         # ② 查 SQLite
         data = self._query_from_db(symbol, limit=lookback)
         
-        # ③ 数据不足 → 拉取远端
-        if len(data) < lookback:
+        # ③ 数据不足 → 拉取远端（LOCAL 模式跳过）
+        if len(data) < lookback and self.source != DataSource.LOCAL:
             provider = self._get_provider()
             end = datetime.now()
             start = end - timedelta(days=max(lookback * 2, 365))
@@ -827,9 +827,16 @@ class MarketDataService:
         conn.close()
     
     def _get_provider(self) -> BaseDataProvider:
-        """获取数据提供者"""
+        """获取数据提供者（懒加载）"""
         if self._provider is None:
-            if self.source == DataSource.TUSHARE:
+            if self.source == DataSource.LOCAL:
+                # LOCAL 模式只读本地 SQLite，不需要 Provider
+                # 调用方应先通过 sync() 或手动导入数据
+                raise RuntimeError(
+                    "当前数据源为 LOCAL，不支持从远端拉取数据。"
+                    "请先调用 sync() 将数据写入本地，或切换为 AKSHARE / TUSHARE / BAOSTOCK。"
+                )
+            elif self.source == DataSource.TUSHARE:
                 self._provider = TushareProvider(self.config.get('tushare_token'))
             elif self.source == DataSource.AKSHARE:
                 self._provider = AkshareProvider()
