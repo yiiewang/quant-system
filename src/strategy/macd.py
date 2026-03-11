@@ -118,6 +118,10 @@ class MACDStrategy(BaseStrategy):
         df = calc.macd(data, fast_period=fast, slow_period=slow, signal_period=signal)
         df = calc.volume_ma(df, periods=[20])
         
+        # 列名对齐：IndicatorCalculator 输出 vol_ma20 / vol_ratio，策略层用 volume_ma / volume_ratio
+        df['volume_ma'] = df['vol_ma20']
+        df['volume_ratio'] = df['vol_ratio'].fillna(1.0)
+        
         # EMA 快慢线（供外部参考）
         df['ema_fast'] = df['close'].ewm(span=fast, adjust=False).mean()
         df['ema_slow'] = df['close'].ewm(span=slow, adjust=False).mean()
