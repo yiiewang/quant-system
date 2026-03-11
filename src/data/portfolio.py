@@ -107,7 +107,7 @@ class PortfolioManager:
                 quantity=row[1],
                 avg_cost=row[2],
                 current_price=row[3],
-                unrealized_pnl=row[4],
+                # row[4] = unrealized_pnl（派生值，由 property 计算，不传入构造）
                 realized_pnl=row[5]
             )
 
@@ -134,7 +134,7 @@ class PortfolioManager:
                 quantity=row[1],
                 avg_cost=row[2],
                 current_price=row[3],
-                unrealized_pnl=row[4],
+                # row[4] = unrealized_pnl（派生值，由 property 计算，不传入构造）
                 realized_pnl=row[5]
             ))
 
