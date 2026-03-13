@@ -3,7 +3,7 @@
 定义策略接口规范，所有策略必须继承此类
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from dataclasses import dataclass, field
 from datetime import datetime
 import pandas as pd
@@ -11,7 +11,30 @@ import logging
 
 from src.core.models import Signal, SignalType, Position, Portfolio, AnalysisResult
 
+if TYPE_CHECKING:
+    from src.data.market import MarketDataService
+    from src.risk.manager import RiskManager
+    from src.broker.simulator import SimulatedExecutor
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class StrategyDeps:
+    """
+    策略依赖注入容器
+
+    由 Engine 在 initialize() 时传入，策略可在 on_start() 中按需使用。
+    所有字段均为可选，策略应做 None 判断后再使用。
+
+    Attributes:
+        data_service: 数据服务，可用于预热指标、加载历史数据
+        risk_manager: 风控管理器，可用于查询仓位限制等
+        executor:     执行器，可用于查询初始资金等
+    """
+    data_service: Optional['MarketDataService'] = None
+    risk_manager: Optional['RiskManager'] = None
+    executor: Optional['SimulatedExecutor'] = None
 
 
 @dataclass
@@ -76,7 +99,8 @@ class BaseStrategy(ABC):
         self._indicators: Dict[str, Any] = {}
         self._state: Dict[str, Any] = {}
         self._initialized = False
-        
+        self._deps: Optional[StrategyDeps] = None  # 由 initialize() 注入
+
         logger.info(f"初始化策略: {self.name} v{self.version}")
         logger.debug(f"策略参数: {self.params}")
     
@@ -273,27 +297,36 @@ class BaseStrategy(ABC):
         
         return True
     
-    def initialize(self) -> None:
+    def initialize(self, deps: Optional[StrategyDeps] = None) -> None:
         """
         策略初始化
-        
-        在策略开始运行前调用，可用于加载历史数据、预热指标等
+
+        在策略开始运行前由 Engine 调用。
+
+        Args:
+            deps: 依赖注入容器（Engine 传入 DataService / RiskManager / Executor）。
+                  单独测试策略时可不传（默认 None）。
         """
         if self._initialized:
             return
         
         if not self.validate_params():
             raise ValueError("参数验证失败")
-        
-        self.on_start()
+
+        self._deps = deps or StrategyDeps()
+        self.on_start(self._deps)
         self._initialized = True
         logger.info(f"策略 {self.name} 初始化完成")
     
-    def on_start(self) -> None:
+    def on_start(self, deps: StrategyDeps) -> None:
         """
         策略启动回调
-        
-        子类可覆盖此方法执行启动时的初始化操作
+
+        子类可覆盖此方法执行启动时的初始化操作，如数据预热、加载模型等。
+
+        Args:
+            deps: 依赖注入容器，包含 data_service / risk_manager / executor，
+                  使用前应做 None 判断（单测场景下可能为空）。
         """
         pass
     

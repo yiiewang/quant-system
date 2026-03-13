@@ -330,8 +330,7 @@ class TradingEngine:
         """初始化所有组件"""
         logger.info("初始化组件...")
 
-        # 策略：优先使用外部注入（Runner 已传入带 yaml params 的实例）
-        # 仅在未注入时才自行创建（Engine 独立使用时的 fallback）
+        # 1. 策略实例（优先外部注入，fallback 到 registry）
         if self._strategy is None:
             from src.strategy.registry import get_registry
             import src.strategy  # noqa: F401 - 确保内置策略已注册
@@ -341,18 +340,9 @@ class TradingEngine:
         else:
             logger.info(f"策略由外部注入，跳过创建: {self._strategy.name}")
 
-        self._strategy.initialize()
-        logger.info(f"策略已初始化: {self._strategy.name}")
-        
-        # 初始化执行器
+        # 2. 执行器（先于策略 initialize，供 on_start 使用）
         from src.broker.simulator import SimulatedExecutor
-        if self.mode == EngineMode.BACKTEST:
-            self._executor = SimulatedExecutor(
-                initial_capital=self.config.initial_capital,
-                commission_rate=self.config.commission,
-                slippage=self.config.slippage
-            )
-        elif self.mode == EngineMode.PAPER:
+        if self.mode in (EngineMode.BACKTEST, EngineMode.PAPER):
             self._executor = SimulatedExecutor(
                 initial_capital=self.config.initial_capital,
                 commission_rate=self.config.commission,
@@ -361,19 +351,29 @@ class TradingEngine:
         else:
             raise NotImplementedError(f"实盘模式暂未实现: {self.mode}")
         logger.info(f"执行器已初始化: {self.mode.value} 模式")
-        
-        # 初始化风控
+
+        # 3. 风控（先于策略 initialize）
         from src.risk.manager import RiskManager, RiskConfig
         self._risk_manager = RiskManager(RiskConfig())
         logger.info("风控管理器已初始化")
-        
-        # 初始化数据服务
+
+        # 4. 数据服务（先于策略 initialize）
         from src.data.market import MarketDataService, DataSource
         if self.mode == EngineMode.BACKTEST:
             self._data_service = MarketDataService(source=DataSource.LOCAL)
         else:
             self._data_service = MarketDataService(source=DataSource.BAOSTOCK)
         logger.info("数据服务已初始化")
+
+        # 5. 策略 initialize — 此时三个依赖组件已就绪，通过 StrategyDeps 注入
+        from src.strategy.base import StrategyDeps
+        deps = StrategyDeps(
+            data_service=self._data_service,
+            risk_manager=self._risk_manager,
+            executor=self._executor,
+        )
+        self._strategy.initialize(deps)
+        logger.info(f"策略已初始化: {self._strategy.name}")
     
     def _load_backtest_data(self, start_date: datetime, end_date: datetime) -> None:
         """加载回测数据"""
