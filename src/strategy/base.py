@@ -80,6 +80,18 @@ class BaseStrategy(ABC):
         logger.info(f"初始化策略: {self.name} v{self.version}")
         logger.debug(f"策略参数: {self.params}")
     
+    @property
+    def min_bars(self) -> int:
+        """
+        策略所需最小 K 线数量（warmup 期）
+
+        回测循环在可用数据根数 < min_bars 时跳过该 bar，
+        避免指标计算基于不足数据产生 NaN 噪声信号。
+
+        默认从 params['min_data_length'] 读取；子类可直接覆盖此 property。
+        """
+        return int(self.params.get('min_data_length', 60))
+
     @classmethod
     def default_params(cls) -> Dict[str, Any]:
         """

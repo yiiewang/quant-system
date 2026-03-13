@@ -605,7 +605,7 @@ class TradingEngine:
         mask = data['date'] <= current_date
         available_data = data[mask].copy()
         
-        if len(available_data) < 60:  # 数据不足
+        if len(available_data) < self._strategy.min_bars:  # 数据不足（warmup 期）
             return
         
         # 获取当日价格
