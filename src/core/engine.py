@@ -329,15 +329,20 @@ class TradingEngine:
     def _initialize_components(self) -> None:
         """初始化所有组件"""
         logger.info("初始化组件...")
-        
-        # 通过注册表加载策略
-        from src.strategy.registry import get_registry
-        import src.strategy  # noqa: F401 - 确保内置策略已注册
-        
-        registry = get_registry()
-        self._strategy = registry.create(self.config.strategy_name)
+
+        # 策略：优先使用外部注入（Runner 已传入带 yaml params 的实例）
+        # 仅在未注入时才自行创建（Engine 独立使用时的 fallback）
+        if self._strategy is None:
+            from src.strategy.registry import get_registry
+            import src.strategy  # noqa: F401 - 确保内置策略已注册
+            registry = get_registry()
+            self._strategy = registry.create(self.config.strategy_name)
+            logger.info(f"策略由 Engine 创建（fallback）: {self._strategy.name}")
+        else:
+            logger.info(f"策略由外部注入，跳过创建: {self._strategy.name}")
+
         self._strategy.initialize()
-        logger.info(f"策略已加载: {self._strategy.name}")
+        logger.info(f"策略已初始化: {self._strategy.name}")
         
         # 初始化执行器
         from src.broker.simulator import SimulatedExecutor
