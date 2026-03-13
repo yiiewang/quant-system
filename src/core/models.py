@@ -39,6 +39,7 @@ class EngineConfig:
     Attributes:
         symbols: 交易标的列表
         strategy_name: 策略名称
+        strategy_params: 策略参数（由外部配置传入，Engine 负责创建策略实例）
         mode: 运行模式 (paper=模拟, live=实盘)
         initial_capital: 初始资金
         poll_interval: 行情轮询间隔（秒）
@@ -47,6 +48,7 @@ class EngineConfig:
     """
     symbols: List[str]
     strategy_name: str = "macd"
+    strategy_params: Dict[str, Any] = field(default_factory=dict)
     mode: str = "paper"
     initial_capital: float = 100000.0
     poll_interval: int = 60

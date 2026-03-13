@@ -330,15 +330,15 @@ class TradingEngine:
         """初始化所有组件"""
         logger.info("初始化组件...")
 
-        # 1. 策略实例（优先外部注入，fallback 到 registry）
-        if self._strategy is None:
-            from src.strategy.registry import get_registry
-            import src.strategy  # noqa: F401 - 确保内置策略已注册
-            registry = get_registry()
-            self._strategy = registry.create(self.config.strategy_name)
-            logger.info(f"策略由 Engine 创建（fallback）: {self._strategy.name}")
-        else:
-            logger.info(f"策略由外部注入，跳过创建: {self._strategy.name}")
+        # 1. 策略实例：完全由 Engine 负责创建（Runner 只传配置，不传实例）
+        from src.strategy.registry import get_registry
+        import src.strategy  # noqa: F401 - 确保内置策略已注册
+        registry = get_registry()
+        self._strategy = registry.create(
+            self.config.strategy_name,
+            params=self.config.strategy_params or None,
+        )
+        logger.info(f"策略已创建: {self._strategy.name} (params={self.config.strategy_params})")
 
         # 2. 执行器（先于策略 initialize，供 on_start 使用）
         from src.broker.simulator import SimulatedExecutor

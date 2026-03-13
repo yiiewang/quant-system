@@ -7,8 +7,6 @@ from datetime import datetime
 import logging
 
 from src.config.loader import Config, RunParams
-from src.strategy.registry import get_registry
-from src.strategy.base import BaseStrategy
 from src.core.models import EngineConfig, EngineMode
 from src.core.metrics import BacktestResult
 from src.core.engine import TradingEngine
@@ -142,45 +140,25 @@ class ApplicationRunner:
     
     def _init_engine(self) -> None:
         """初始化交易引擎"""
-        # 创建策略实例
-        strategy = self._create_strategy()
-        
-        # 构建引擎配置
-        # 从 YAML 配置中获取 symbols
+        # Runner 只负责组装配置，策略的创建完全交给 Engine
         yaml_symbols = self.config.get_raw('engine', 'symbols', default=[])
         symbols = self.params.symbols if self.params.symbols else yaml_symbols
-        
-        # EngineConfig.mode 只接受 paper 或 live，其他模式由 run_* 方法处理
-        engine_mode = 'paper'  # 默认使用模拟模式
-        
+
         engine_config = EngineConfig(
-            symbols=symbols or ['000001.SZ'],  # 默认值
+            symbols=symbols or ['000001.SZ'],
             strategy_name=self.config.strategy.name,
-            mode=engine_mode,
+            strategy_params=self.config.strategy.params or {},
+            mode='paper',
             initial_capital=self.params.initial_capital,
             poll_interval=self.params.interval or 60,
-            max_positions=10,  # 固定值，RiskConfig 中没有这个字段
+            max_positions=10,
             enable_risk_check=True,
             commission=self.config.strategy.commission if hasattr(self.config.strategy, 'commission') else 0.0003,
             slippage=self.config.strategy.slippage if hasattr(self.config.strategy, 'slippage') else 0.001,
         )
-        
-        # 创建引擎
+
         self._engine = TradingEngine(engine_config, self._event_bus)
-        self._engine._strategy = strategy
-        
         logger.info(f"交易引擎已初始化: {engine_config.strategy_name}")
-    
-    def _create_strategy(self) -> BaseStrategy:
-        """创建策略实例"""
-        registry = get_registry()
-        strategy_name = self.config.strategy.name
-        strategy_params = self.config.strategy.params
-        
-        strategy = registry.create(strategy_name, params=strategy_params)
-        logger.info(f"策略已加载: {strategy.name} v{strategy.version}")
-        
-        return strategy
     
     def _init_notifier(self) -> None:
         """初始化通知服务"""
