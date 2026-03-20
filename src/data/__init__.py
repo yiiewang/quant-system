@@ -1,15 +1,23 @@
 """
-数据服务模块
-包含行情数据服务、指标计算和持仓管理
+数据模块
+
+Usage:
+    from src.config import load_config, Config
+    from src.data import init_data_service, MarketDataService
+    
+    config = load_config(Config, "config/system.yaml")
+    service = init_data_service(config.data)
+    
+    # 或直接使用
+    service = MarketDataService(source=DataSource.TUSHARE)
 """
-from .market import MarketDataService, DataSource, Frequency
-from .indicator import IndicatorCalculator
-from .portfolio import PortfolioManager
+
+from .service import MarketDataService
+from .factory import init_data_service
+from .provider import Frequency
 
 __all__ = [
     'MarketDataService',
-    'DataSource',
+    'init_data_service',
     'Frequency',
-    'IndicatorCalculator',
-    'PortfolioManager',
 ]

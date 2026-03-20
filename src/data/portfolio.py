@@ -150,8 +150,10 @@ class PortfolioManager:
         with self._db_lock:
             conn = sqlite3.connect(self.db_path)
             try:
+                timestamp_str = trade.timestamp.isoformat() if trade.timestamp else datetime.now().isoformat()
+                strategy_val = getattr(trade, 'strategy', None)
                 conn.execute('''
-                    INSERT OR REPLACE INTO trades 
+                    INSERT OR REPLACE INTO trades
                     (trade_id, order_id, symbol, side, quantity, price, commission, timestamp, strategy)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
@@ -162,16 +164,16 @@ class PortfolioManager:
                     trade.quantity,
                     trade.price,
                     trade.commission,
-                    trade.timestamp.isoformat(),
-                    trade.strategy
+                    timestamp_str,
+                    strategy_val
                 ))
                 conn.commit()
             finally:
                 conn.close()
 
-    def get_trades(self, symbol: str = None,
-                   start_date: datetime = None,
-                   end_date: datetime = None,
+    def get_trades(self, symbol: Optional[str] = None,
+                   start_date: Optional[datetime] = None,
+                   end_date: Optional[datetime] = None,
                    limit: int = 100) -> List[Trade]:
         """
         获取交易记录
@@ -212,21 +214,26 @@ class PortfolioManager:
 
         trades = []
         for row in rows:
-            trades.append(Trade(
-                trade_id=row[0],
-                order_id=row[1],
-                symbol=row[2],
-                side=OrderSide(row[3]),
-                quantity=row[4],
-                price=row[5],
-                commission=row[6],
-                timestamp=datetime.fromisoformat(row[7]),
-                strategy=row[8]
-            ))
+            trade_kwargs = {
+                'trade_id': row[0],
+                'order_id': row[1],
+                'symbol': row[2],
+                'side': OrderSide(row[3]),
+                'quantity': row[4],
+                'price': row[5],
+                'commission': row[6],
+                'timestamp': datetime.fromisoformat(row[7]),
+            }
+            # 如果 Trade 支持 strategy 参数
+            try:
+                trade_kwargs['strategy'] = row[8]
+            except (IndexError, TypeError):
+                pass
+            trades.append(Trade(**trade_kwargs))
 
         return trades
 
-    def get_daily_summary(self, target_date: date = None) -> Dict[str, Any]:
+    def get_daily_summary(self, target_date: Optional[date] = None) -> Dict[str, Any]:
         """
         获取每日汇总
 

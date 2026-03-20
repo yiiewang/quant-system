@@ -2,9 +2,8 @@
 指标计算器
 提供常用技术指标的计算功能
 """
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Optional
 import pandas as pd
-import numpy as np
 import logging
 
 logger = logging.getLogger(__name__)
@@ -40,9 +39,9 @@ class IndicatorCalculator:
             'volume_ma': self.volume_ma,
         }
     
-    def calculate(self, data: pd.DataFrame, 
-                  indicators: list, 
-                  params: Dict[str, Dict] = None) -> pd.DataFrame:
+    def calculate(self, data: pd.DataFrame,
+                  indicators: list,
+                  params: Optional[Dict[str, Dict]] = None) -> pd.DataFrame:
         """
         批量计算指标
         
@@ -177,7 +176,7 @@ class IndicatorCalculator:
         return df
     
     def ma(self, data: pd.DataFrame,
-           periods: list = None) -> pd.DataFrame:
+           periods: Optional[list] = None) -> pd.DataFrame:
         """
         计算移动平均线
         
@@ -197,7 +196,7 @@ class IndicatorCalculator:
         return df
     
     def ema(self, data: pd.DataFrame,
-            periods: list = None) -> pd.DataFrame:
+            periods: Optional[list] = None) -> pd.DataFrame:
         """
         计算指数移动平均线
         
@@ -273,7 +272,7 @@ class IndicatorCalculator:
         return df
     
     def volume_ma(self, data: pd.DataFrame,
-                  periods: list = None) -> pd.DataFrame:
+                  periods: Optional[list] = None) -> pd.DataFrame:
         """
         计算成交量均线
         
