@@ -12,7 +12,6 @@ import logging
 
 import pandas as pd
 
-from src.config.schema import DataSource
 from .provider import BaseDataProvider, Frequency
 from .health_monitor import ProviderHealthMonitor
 
@@ -124,34 +123,34 @@ class SmartDataAdapter:
         
         # 尝试添加 yfinance（用于美股、港股、加密货币）
         try:
-            from .market import YFinanceProvider
+            from .provider import YFinanceProvider
             sources.append(DataSourceConfig(
-                'yfinance', 
-                YFinanceProvider(), 
+                'yfinance',
+                YFinanceProvider(),
                 priority=1,  # 最高优先级（用于非A股）
                 timeout=15.0
             ))
         except ImportError:
             logger.warning("yfinance 未安装，跳过该数据源")
-        
+
         # 尝试添加 baostock（A股）
         try:
-            from .market import BaostockProvider
+            from .provider import BaostockProvider
             sources.append(DataSourceConfig(
-                'baostock', 
-                BaostockProvider(), 
+                'baostock',
+                BaostockProvider(),
                 priority=2,
                 timeout=10.0
             ))
         except ImportError:
             logger.warning("baostock 未安装，跳过该数据源")
-        
+
         # 尝试添加 akshare
         try:
-            from .market import AkshareProvider
+            from .provider import AkshareProvider
             sources.append(DataSourceConfig(
-                'akshare', 
-                AkshareProvider(), 
+                'akshare',
+                AkshareProvider(),
                 priority=3,
                 timeout=10.0
             ))
