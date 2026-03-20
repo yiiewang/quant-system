@@ -36,7 +36,10 @@ env/
 *~
 
 # 项目数据（仅忽略仓库根目录运行产物）
-/data/
+/data/*
+!/data/strategies/
+!/data/strategies/**
+/data/strategies/__pycache__/
 /logs/
 /output/
 *.db

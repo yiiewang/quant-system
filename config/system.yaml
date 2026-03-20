@@ -1,0 +1,143 @@
+# MACD 量化交易系统 - 系统配置
+# 本文件包含完整的系统配置（日志、存储、数据源、报告、API服务等）
+# 策略配置请参见 src/strategy/configs/ 目录
+
+# ==================== 系统基础配置 ====================
+system:
+  name: "MACD Trading System"
+  version: "1.0.0"
+  data_dir: "data"
+
+# ==================== 策略配置 ====================
+strategy:
+  # 策略目录（支持多个目录，按优先级顺序扫描）
+  # 所有策略文件都应放在这些目录中
+  directories:
+    - "data/strategies"  # 策略目录
+  # 是否递归扫描子目录
+  recursive: false
+
+# ==================== 数据存储配置 ====================
+storage:
+  # 本地缓存数据库（市场数据）
+  db_path: "data/market.db"
+  # 持仓/交易记录
+  portfolio_db: "data/portfolio.db"
+  # 本地文件缓存目录（历史数据备份）
+  local_cache_dir: "data/cache"
+
+# ==================== 数据源配置 ====================
+data_sources:
+  # 主数据源（A股数据）
+  primary: "tushare"
+  
+  # 备选数据源（按优先级顺序）
+  # yfinance 用于美股、港股、加密货币
+  fallbacks:
+    - "akshare"
+    - "baostock"
+    - "yfinance"
+  
+  # 是否启用本地文件缓存
+  enable_local_cache: true
+  
+  # 是否启用SQLite本地存储
+  enable_sqlite: true
+  
+  # 并行请求配置
+  parallel_fetch: true
+  max_parallel_workers: 3
+  
+  # 超时配置（单位：秒）
+  timeout_per_source: 10.0
+  total_timeout: 15.0
+  
+  # 重试配置
+  max_retries: 2
+  retry_delay: 1.0  # 秒
+  
+  # 健康监控配置
+  enable_health_monitor: true
+  health_check_interval: 300  # 健康检查间隔（秒）
+  failure_threshold: 3        # 多少次失败标记为离线
+  cooldown_period: 300        # 冷却时间（秒），离线后多久尝试恢复
+  
+  # API认证配置
+  api_tokens:
+    tushare: "${TUSHARE_TOKEN}"  # 从环境变量读取
+    akshare: ""                  # AKShare不需要token
+    baostock: ""
+  
+  # 数据源特定配置
+  source_configs:
+    tushare:
+      api_endpoint: "http://api.tushare.pro"
+      rate_limit: 200  # 每分钟请求数限制
+      
+    akshare:
+      rate_limit: 100
+      
+    baostock:
+      host: "127.0.0.1"
+      port: 8888
+
+# ==================== 缓存配置 ====================
+cache:
+  # 最新数据缓存配置
+  get_latest_ttl: 60          # 缓存时间（秒）
+  get_latest_maxsize: 200     # 最大缓存条目数
+  # 历史数据缓存配置
+  get_history_ttl: 300        # 缓存时间（秒）
+  get_history_maxsize: 100
+
+# ==================== 日志配置 ====================
+logging:
+  # 日志级别: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+  # 日志目录
+  log_dir: "logs"
+  # 是否输出到控制台
+  console_output: true
+  # 保留的日志文件数量（天数）
+  backup_count: 30
+
+# ==================== 报告配置 ====================
+report:
+  output_dir: "output/reports"
+  format: "markdown"            # markdown | html | json
+  include_charts: false         # 命令行模式不生成图表
+
+# ==================== HTTP API 服务配置 ====================
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+  cors_origins:
+    - "*"
+
+# ==================== 通知配置 ====================
+notification:
+  enabled: true  # 全局开关：是否启用通知组件
+  
+  # 邮件通知配置（环境变量）
+  email:
+    enabled: true  # 是否启用邮件通知
+    # SMTP 配置通过环境变量设置:
+    # SMTP_SERVER - SMTP服务器 (默认 smtp.qq.com)
+    # SMTP_PORT - 端口 (默认 465)
+    # SMTP_USER - 发件邮箱
+    # SMTP_PASS - 邮箱授权码
+    # SMTP_SSL - 是否SSL (默认 true)
+  
+  # Webhook 通知配置（环境变量）
+  webhook:
+    enabled: false  # 是否启用 Webhook 通知
+    # WEBHOOK_URL - Webhook 地址（环境变量）
+
+# 策略级别通知配置在 data/strategies/<策略名>.yaml 中:
+# notification:
+#   enabled: true/false      # 该策略是否发送通知
+#   email:
+#     recipients: [...]      # 收件人列表
+#   webhook:
+#     url: "..."             # 该策略的 webhook 地址（可选，覆盖默认）

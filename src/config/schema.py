@@ -38,10 +38,27 @@ class LogLevel(Enum):
 
 @dataclass
 class EmailConfig:
-    """邮件通知配置"""
+    """邮件通知配置
+
+    SMTP 发送端配置优先从环境变量读取，用户主要配置收件人即可。
+
+    环境变量:
+        SMTP_SERVER: SMTP 服务器地址 (默认 smtp.qq.com)
+        SMTP_PORT: SMTP 端口 (默认 465)
+        SMTP_USER: 发件邮箱账号
+        SMTP_PASS: 邮箱授权码
+        SMTP_SSL: 是否使用 SSL (默认 true)
+    """
     enabled: bool = False
     recipients: List[str] = field(default_factory=list)
     sender_name: str = "量化交易系统"
+
+    # SMTP 配置（可通过环境变量如 APP_NOTIFICATION_EMAIL_SMTP_SERVER 覆盖）
+    smtp_server: str = "smtp.qq.com"
+    smtp_port: int = 465
+    username: str = ""
+    password: str = ""
+    use_ssl: bool = True
 
 
 @dataclass
@@ -55,6 +72,7 @@ class WebhookConfig:
 @dataclass
 class NotificationConfig:
     """通知模块配置"""
+    enabled: bool = False
     email: EmailConfig = field(default_factory=EmailConfig)
     webhook: WebhookConfig = field(default_factory=WebhookConfig)
 

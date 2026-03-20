@@ -7,55 +7,13 @@ import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.utils import formataddr
-from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from src.core.models import BaseNotifier, NotifyMessage, AnalysisResult
+from src.config.schema import EmailConfig
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class EmailConfig:
-    """邮件配置
-    
-    SMTP 发送端通过环境变量配置，用户只需提供收件邮箱。
-    
-    环境变量:
-        SMTP_SERVER: SMTP 服务器地址 (默认 smtp.qq.com)
-        SMTP_PORT: SMTP 端口 (默认 465)
-        SMTP_USER: 发件邮箱账号
-        SMTP_PASS: 邮箱授权码
-        SMTP_SSL: 是否使用 SSL (默认 true)
-    """
-    recipients: List[str] = None             # 收件人列表（用户配置）
-    sender_name: str = "MACD交易系统"         # 发件人名称
-    
-    # 以下字段自动从环境变量读取，用户无需配置
-    smtp_server: str = ""
-    smtp_port: int = 465
-    username: str = ""
-    password: str = ""
-    use_ssl: bool = True
-    
-    def __post_init__(self):
-        import os
-        if self.recipients is None:
-            self.recipients = []
-        # SMTP 配置统一从环境变量读取
-        if not self.smtp_server:
-            self.smtp_server = os.environ.get('SMTP_SERVER', 'smtp.qq.com')
-        if not self.username:
-            self.username = os.environ.get('SMTP_USER', '')
-        if not self.password:
-            self.password = os.environ.get('SMTP_PASS', '')
-        port_str = os.environ.get('SMTP_PORT', '')
-        if port_str:
-            self.smtp_port = int(port_str)
-        ssl_str = os.environ.get('SMTP_SSL', '').lower()
-        if ssl_str in ('false', '0', 'no'):
-            self.use_ssl = False
 
 
 class EmailNotifier(BaseNotifier):
@@ -92,7 +50,7 @@ class EmailNotifier(BaseNotifier):
         Returns:
             bool: 是否发送成功
         """
-        body = message.html_content if message.html_content else f"<p>{message.content}</p>"
+        body = message.content if message.content else f"<p>{message.content}</p>"
         return self._send_email(message.title, body)
         
     def send_signal(
@@ -101,7 +59,9 @@ class EmailNotifier(BaseNotifier):
         signal_type: str,  # BUY / SELL / HOLD
         price: float,
         reason: str,
-        additional_info: Optional[Dict[str, Any]] = None
+        indicators: Optional[Dict[str, Any]] = None,
+        additional_info: Optional[Dict[str, Any]] = None,
+        **kwargs
     ) -> bool:
         """
         发送交易信号通知
@@ -128,7 +88,7 @@ class EmailNotifier(BaseNotifier):
         
         # 构建邮件内容
         subject = self._build_subject(symbol, signal_type, price)
-        body = self._build_body(symbol, signal_type, price, reason, additional_info)
+        body = self._build_body(symbol, signal_type, price, reason, indicators, additional_info)
         
         # 发送邮件
         success = self._send_email(subject, body)
@@ -202,6 +162,7 @@ class EmailNotifier(BaseNotifier):
         signal_type: str,
         price: float,
         reason: str,
+        indicators: Optional[Dict[str, Any]] = None,
         additional_info: Optional[Dict[str, Any]] = None
     ) -> str:
         """构建邮件正文（HTML格式）"""
@@ -223,10 +184,11 @@ class EmailNotifier(BaseNotifier):
             action = "观望"
             icon = "⚪"
         
-        # 额外信息表格
+        # 指标信息表格
         info_rows = ""
-        if additional_info:
-            for key, value in additional_info.items():
+        info_data = indicators or additional_info or {}
+        if info_data:
+            for key, value in info_data.items():
                 if isinstance(value, float):
                     value = f"{value:.4f}"
                 info_rows += f"""
@@ -475,6 +437,11 @@ class EmailNotifier(BaseNotifier):
             logger.warning("未配置邮箱账号或密码，跳过发送")
             return False
         
+        logger.info(f"准备发送邮件: {subject}")
+        logger.info(f"  SMTP服务器: {self.config.smtp_server}:{self.config.smtp_port}")
+        logger.info(f"  发件人: {self.config.username}")
+        logger.info(f"  收件人: {self.config.recipients}")
+        
         try:
             # 创建邮件
             msg = MIMEMultipart('alternative')
@@ -485,6 +452,8 @@ class EmailNotifier(BaseNotifier):
             # 添加HTML正文
             html_part = MIMEText(body, 'html', 'utf-8')
             msg.attach(html_part)
+            
+            logger.info("  正在连接 SMTP 服务器...")
             
             # 发送邮件
             if self.config.use_ssl:
@@ -499,7 +468,10 @@ class EmailNotifier(BaseNotifier):
                 )
                 server.starttls()
             
+            logger.info("  正在登录...")
             server.login(self.config.username, self.config.password)
+            
+            logger.info("  正在发送邮件...")
             server.sendmail(
                 self.config.username,
                 self.config.recipients,
@@ -507,7 +479,7 @@ class EmailNotifier(BaseNotifier):
             )
             server.quit()
             
-            logger.info(f"邮件发送成功: {subject}")
+            logger.info(f"✓ 邮件发送成功: {subject} -> {self.config.recipients}")
             return True
             
         except smtplib.SMTPAuthenticationError as e:

@@ -137,26 +137,43 @@ def _from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
 
 
 def _from_env(cls: Type[T], prefix: str = "") -> T:
-    """从环境变量创建配置对象"""
+    """从环境变量创建配置对象（支持嵌套配置）
+
+    环境变量命名规则: {prefix}_{nested_path}_{field}.upper()
+    例如: APP_NOTIFICATION_EMAIL_SMTP_SERVER
+    """
     import dataclasses
-    
-    if not dataclasses.is_dataclass(cls):
-        return cls()
-    
-    kwargs = {}
-    
-    for f in dataclasses.fields(cls):
-        field_name = f.name
-        if field_name.startswith('_'):
-            continue
-        
-        env_var = f"{prefix}_{field_name}".upper()
-        
-        if env_var in os.environ:
-            field_type = f.type
-            kwargs[field_name] = _convert_value(os.environ[env_var], field_type)
-    
-    return cls(**kwargs)
+
+    def _build_env_config(cls: Type, prefix: str) -> Dict[str, Any]:
+        """递归构建配置字典"""
+        if not dataclasses.is_dataclass(cls):
+            return {}
+
+        result = {}
+        type_hints = get_type_hints(cls)
+
+        for f in dataclasses.fields(cls):
+            field_name = f.name
+            if field_name.startswith('_'):
+                continue
+
+            field_type = type_hints.get(field_name, f.type)
+            env_var = f"{prefix}_{field_name}".upper()
+
+            # 嵌套配置类 - 递归处理
+            if _is_config_class(field_type):
+                nested_prefix = f"{prefix}_{field_name}"
+                nested_config = _build_env_config(field_type, nested_prefix)
+                if nested_config:
+                    result[field_name] = nested_config
+            # 检查环境变量
+            elif env_var in os.environ:
+                result[field_name] = _convert_value(os.environ[env_var], field_type)
+
+        return result
+
+    config_dict = _build_env_config(cls, prefix)
+    return _from_dict(cls, config_dict) if config_dict else cls()
 
 
 def load_config(

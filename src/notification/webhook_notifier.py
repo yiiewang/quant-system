@@ -5,20 +5,13 @@ Webhook 通知模块
 import json
 import logging
 from urllib import request, error
-from dataclasses import dataclass
 from typing import Optional, Dict, Any
 from datetime import datetime
 
 from src.core.models import BaseNotifier, NotifyMessage
+from src.config.schema import WebhookConfig
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class WebhookConfig:
-    """Webhook 配置，用户只需提供 URL"""
-    url: str = ""
-    type: str = ""  # wecom / dingtalk / feishu / custom，留空自动识别
 
 
 class WebhookNotifier(BaseNotifier):
@@ -54,7 +47,9 @@ class WebhookNotifier(BaseNotifier):
         signal_type: str,
         price: float,
         reason: str,
-        additional_info: Optional[Dict[str, Any]] = None
+        indicators: Optional[Dict[str, Any]] = None,
+        additional_info: Optional[Dict[str, Any]] = None,
+        **kwargs
     ) -> bool:
         """发送交易信号通知"""
         action = {"BUY": "买入", "SELL": "卖出"}.get(signal_type, "观望")
