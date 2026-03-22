@@ -1,19 +1,18 @@
 """
 策略模块
-包含策略基类、策略注册表和具体策略实现
+包含策略基类、策略注册表、策略加载器和策略管理器
 
-导入本模块会自动将所有内置策略注册到全局注册表。
+策略通过配置文件指定的目录加载，无内置策略概念。
 """
+import logging
+import os
+
 from .base import BaseStrategy, StrategyContext
 from .registry import registry, register_strategy, get_registry
-from .macd import MACDStrategy
-from .macd_multi_timeframe import MultiTimeframeMACDStrategy
-from .macd_weekly import WeeklyMACDStrategy
+from .loader import StrategyLoader
+from .manager import StrategyManager, get_strategy_manager
 
-# 注册内置策略
-registry.register('macd', MACDStrategy)
-registry.register('multi_timeframe', MultiTimeframeMACDStrategy)
-registry.register('weekly', WeeklyMACDStrategy)
+logger = logging.getLogger(__name__)
 
 __all__ = [
     # 基类
@@ -23,8 +22,9 @@ __all__ = [
     'registry',
     'register_strategy',
     'get_registry',
-    # 内置策略
-    'MACDStrategy',
-    'MultiTimeframeMACDStrategy',
-    'WeeklyMACDStrategy',
+    # 加载器
+    'StrategyLoader',
+    # 管理器
+    'StrategyManager',
+    'get_strategy_manager',
 ]

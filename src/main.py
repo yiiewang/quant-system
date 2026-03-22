@@ -3,7 +3,7 @@
 MACD 量化交易系统 - 主入口
 
 使用方式:
-    python -m src.main run --config src/strategy/configs/default.yaml
+    python -m src.main run --config data/strategies/aaa.yaml
     python -m src.main backtest --start 2024-01-01 --end 2024-12-31
     python -m src.main data sync --symbols 000001.SZ,000002.SZ
 """

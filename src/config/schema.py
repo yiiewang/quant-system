@@ -78,6 +78,13 @@ class NotificationConfig:
 
 
 @dataclass
+class StrategyConfig:
+    """策略管理器配置"""
+    directory: str = field(default_factory=lambda: "data/strategies")
+    recursive: bool = False
+
+
+@dataclass
 class DataConfig:
     """数据模块配置"""
     source: DataSource = DataSource.LOCAL
@@ -136,6 +143,14 @@ class TradingConfig:
 
 
 @dataclass
+class EngineManagerConfig:
+    """引擎管理器配置"""
+    max_concurrent_tasks: int = 5      # 最大并发任务数
+    max_total_tasks: int = 20          # 最大总任务数
+    default_task_timeout: int = 0      # 默认任务超时时间（秒，0表示无限制）
+
+
+@dataclass
 class Config:
     """
     全局配置
@@ -155,8 +170,10 @@ class Config:
         # APP_DATA_SOURCE=tushare -> 自动转换为 DataSource.TUSHARE
     """
     data: DataConfig = field(default_factory=DataConfig)
+    strategy: StrategyConfig = field(default_factory=StrategyConfig)
     log: LogConfig = field(default_factory=LogConfig)
     api: ApiConfig = field(default_factory=ApiConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
     notification: NotificationConfig = field(default_factory=NotificationConfig)
+    engine: EngineManagerConfig = field(default_factory=EngineManagerConfig)

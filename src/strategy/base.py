@@ -6,10 +6,12 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from dataclasses import dataclass, field
 from datetime import datetime
+import sys
 import pandas as pd
 import logging
 
-from src.core.models import Signal, SignalType, Position, Portfolio, AnalysisResult
+from src.core.models import Signal, SignalType, Position, Portfolio, StrategyDecision
+from src.common import StrategyContext
 
 if TYPE_CHECKING:
     from src.data.market import MarketDataService
@@ -35,27 +37,6 @@ class StrategyDeps:
     data_service: Optional['MarketDataService'] = None
     risk_manager: Optional['RiskManager'] = None
     executor: Optional['SimulatedExecutor'] = None
-
-
-@dataclass
-class StrategyContext:
-    """
-    策略上下文
-    
-    包含策略执行所需的环境信息
-    
-    Attributes:
-        symbol: 当前处理的股票代码
-        portfolio: 投资组合
-        position: 当前持仓
-        timestamp: 当前时间
-        params: 策略参数
-    """
-    symbol: str
-    portfolio: Portfolio
-    position: Optional[Position] = None
-    timestamp: datetime = field(default_factory=datetime.now)
-    params: Dict[str, Any] = field(default_factory=dict)
 
 
 class BaseStrategy(ABC):
@@ -88,21 +69,130 @@ class BaseStrategy(ABC):
     author: str = ""
     description: str = ""
     
-    def __init__(self, params: Dict[str, Any] = None):
+    # 策略配置类（子类可覆盖以定义自定义配置结构）
+    ConfigClass: type = None  # type: ignore
+    
+    def __init__(self, params: Optional[Dict[str, Any]] = None, config: Any = None):
         """
         初始化策略
-        
+
         Args:
             params: 策略参数，会与默认参数合并
+            config: 结构化配置对象（由 StrategyManager 注入）
         """
         self.params = {**self.default_params(), **(params or {})}
+        self._config = config  # 存储完整配置
         self._indicators: Dict[str, Any] = {}
         self._state: Dict[str, Any] = {}
         self._initialized = False
         self._deps: Optional[StrategyDeps] = None  # 由 initialize() 注入
 
-        logger.info(f"初始化策略: {self.name} v{self.version}")
-        logger.debug(f"策略参数: {self.params}")
+        # 获取策略专用日志记录器
+        from src.utils.logging_config import get_strategy_logger
+        self._strategy_logger = get_strategy_logger(self.name)
+
+        self._strategy_logger.info(f"初始化策略: {self.name} v{self.version}")
+        self._strategy_logger.debug(f"策略参数: {self.params}")
+    
+    @property
+    def config(self) -> Any:
+        """
+        获取策略配置对象
+        
+        如果策略定义了 ConfigClass，返回该类型的结构化配置对象
+        否则返回原始配置字典
+        
+        Returns:
+            结构化配置对象或字典
+        """
+        if self._config is None:
+            return {}
+        
+        # 如果已经是目标类型，直接返回
+        if self.ConfigClass and isinstance(self._config, self.ConfigClass):
+            return self._config
+        
+        # 如果定义了 ConfigClass 且配置是字典，尝试转换
+        if self.ConfigClass and isinstance(self._config, dict):
+            return self._parse_config_to_object(self._config)
+        
+        return self._config
+    
+    def _parse_config_to_object(self, config_dict: Dict[str, Any]) -> Any:
+        """
+        将配置字典解析为结构化对象
+        
+        Args:
+            config_dict: 配置字典
+            
+        Returns:
+            结构化配置对象
+        """
+        if not self.ConfigClass:
+            return config_dict
+        
+        try:
+            import dataclasses
+            
+            # 如果是 dataclass
+            if dataclasses.is_dataclass(self.ConfigClass):
+                return self._parse_to_dataclass(config_dict, self.ConfigClass)
+            
+            # 如果有 from_dict 方法
+            if hasattr(self.ConfigClass, 'from_dict'):
+                return self.ConfigClass.from_dict(config_dict)
+            
+            # 尝试直接实例化
+            return self.ConfigClass(**config_dict)
+            
+        except Exception as e:
+            self._strategy_logger.warning(f"配置解析失败，返回原始字典: {e}")
+            return config_dict
+    
+    def _parse_to_dataclass(self, data: Dict[str, Any], cls: type) -> Any:
+        """
+        递归解析字典到 dataclass
+        
+        Args:
+            data: 原始数据字典
+            cls: 目标 dataclass 类型
+            
+        Returns:
+            dataclass 实例
+        """
+        import dataclasses
+        
+        # 获取 dataclass 的所有字段
+        fields = dataclasses.fields(cls)
+        field_values = {}
+        
+        for field in fields:
+            field_name = field.name
+            
+            # 跳过私有字段
+            if field_name.startswith('_'):
+                continue
+            
+            # 获取字段值
+            if field_name in data:
+                value = data[field_name]
+                
+                # 如果字段类型是 dataclass，递归解析
+                if dataclasses.is_dataclass(field.type):
+                    if isinstance(value, dict):
+                        field_values[field_name] = self._parse_to_dataclass(value, field.type)  # type: ignore
+                    else:
+                        field_values[field_name] = value
+                else:
+                    field_values[field_name] = value
+            elif field.default != dataclasses.MISSING:
+                # 使用默认值
+                field_values[field_name] = field.default
+            elif field.default_factory != dataclasses.MISSING:
+                # 使用默认工厂
+                field_values[field_name] = field.default_factory()
+        
+        return cls(**field_values)
     
     @property
     def min_bars(self) -> int:
@@ -127,6 +217,109 @@ class BaseStrategy(ABC):
             Dict[str, Any]: 参数字典
         """
         return {}
+    
+    @classmethod
+    def config_schema(cls) -> Dict[str, Any]:
+        """
+        配置模式定义
+        
+        定义策略配置文件的结构，用于解析和验证配置
+        
+        Returns:
+            Dict[str, Any]: 配置模式
+        
+        Example:
+            return {
+                'params': {
+                    'fast_period': {'type': 'int', 'default': 12},
+                    'slow_period': {'type': 'int', 'default': 26},
+                },
+                'risk': {
+                    'stop_loss_pct': {'type': 'float', 'default': 0.05},
+                }
+            }
+        """
+        return {}
+    
+    @classmethod
+    def load_config(cls, config_path: Optional[str] = None) -> Dict[str, Any]:
+        """
+        加载策略配置文件
+        
+        查找顺序:
+        1. 指定的 config_path
+        2. 策略同目录下的 {strategy_name}.yaml
+        3. 返回空配置
+        
+        Args:
+            config_path: 配置文件路径（可选）
+            
+        Returns:
+            Dict[str, Any]: 配置字典
+        """
+        import yaml
+        from pathlib import Path
+        
+        # 策略名称
+        strategy_name = cls.name if hasattr(cls, 'name') else cls.__name__.lower()
+        
+        # 查找配置文件
+        config_file = None
+        search_paths = []
+        
+        if config_path:
+            search_paths.append(Path(config_path))
+        
+        # 从策略类所在模块推断目录
+        try:
+            module_path = sys.modules[cls.__module__].__file__
+            if module_path is not None:
+                module_file = Path(module_path)
+                strategy_dir = module_file.parent
+                search_paths.append(strategy_dir / f"{strategy_name}.yaml")
+        except (KeyError, AttributeError):
+            pass
+        
+        # 标准配置目录
+        search_paths.extend([
+            Path("data/strategies") / f"{strategy_name}.yaml",
+        ])
+        
+        # 查找第一个存在的配置文件
+        for path in search_paths:
+            if path.exists():
+                config_file = path
+                break
+        
+        if not config_file:
+            logger.debug(f"未找到策略 {strategy_name} 的配置文件")
+            return {}
+        
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f) or {}
+            
+            logger.info(f"加载策略配置: {config_file}")
+            return cls.parse_config(config)
+            
+        except Exception as e:
+            logger.warning(f"加载策略配置失败: {e}")
+            return {}
+    
+    @classmethod
+    def parse_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        解析配置字典
+        
+        子类可覆盖此方法实现自定义解析逻辑
+        
+        Args:
+            config: 原始配置字典
+            
+        Returns:
+            Dict[str, Any]: 解析后的配置
+        """
+        return config
     
     @classmethod
     def param_schema(cls) -> Dict[str, Any]:
@@ -179,61 +372,60 @@ class BaseStrategy(ABC):
         pass
     
     @abstractmethod
-    def generate_signal(self, data: pd.DataFrame, context: StrategyContext) -> Signal:
+    def evaluate(self, data: pd.DataFrame, context: StrategyContext) -> StrategyDecision:
         """
-        生成交易信号
+        策略评估（必须实现）
         
-        根据计算好的指标数据生成交易信号
-        
-        Args:
-            data: 包含指标的 OHLCV 数据
-            context: 策略上下文（包含持仓、组合等信息）
-        
-        Returns:
-            Signal: 交易信号对象
-        """
-        pass
-    
-    @abstractmethod
-    def analyze_status(self, data: pd.DataFrame, symbol: str) -> AnalysisResult:
-        """
-        分析当前市场状态 (策略实现)
-        
-        框架在 analyze 和 monitor 模式中调用此方法。
-        策略需要返回当前的市场状态、建议操作和分析理由。
+        统一的策略决策方法。策略实现此方法，返回完整的决策信息。
         
         Args:
             data: 包含指标的 OHLCV 数据 (已调用 calculate_indicators)
-            symbol: 股票代码
+            context: 策略上下文（包含 symbol、持仓、组合等信息）
         
         Returns:
-            AnalysisResult: 分析结果，包含:
-                - status: 当前状态 (如: "多头趋势"/"空头趋势"/"震荡")
-                - action: 建议操作 (如: "买入"/"卖出"/"观望")
-                - reason: 详细分析理由
+            StrategyDecision: 统一的策略决策，包含:
+                - signal_type: 交易信号类型 (BUY/SELL/HOLD)
+                - status: 市场状态描述
+                - action: 建议操作
+                - reason: 详细理由
                 - indicators: 关键指标值
-                - confidence: 置信度 (0.0-1.0)
+                - confidence: 置信度
+        
+        Example:
+            def evaluate(self, data, context):
+                ma20 = data['close'].rolling(20).mean().iloc[-1]
+                price = data['close'].iloc[-1]
+                
+                if price > ma20 * 1.02:
+                    return StrategyDecision.buy(
+                        symbol=context.symbol,
+                        price=price,
+                        reason="价格突破20日均线2%",
+                        status="多头趋势",
+                        indicators={"ma20": ma20, "price": price}
+                    )
+                return StrategyDecision.hold(context.symbol, "观望")
         """
         pass
     
-    def should_notify(self, signal: Signal, last_signal: Optional[Signal] = None) -> bool:
+    def should_notify(self, decision: StrategyDecision, last_decision: Optional[StrategyDecision] = None) -> bool:
         """
         决定是否发送通知 (策略可覆盖)
         
-        框架在 monitor 模式中调用此方法决定是否触发通知。
+        框架在 live 模式中调用此方法决定是否触发通知。
         默认逻辑：信号类型发生变化时通知。
         策略可覆盖此方法实现更复杂的通知逻辑。
         
         Args:
-            signal: 当前信号
-            last_signal: 上一次信号 (首次为 None)
+            decision: 当前决策
+            last_decision: 上一次决策 (首次为 None)
         
         Returns:
             bool: 是否应该发送通知
         """
-        if last_signal is None:
-            return signal.signal_type != SignalType.HOLD
-        return signal.signal_type != last_signal.signal_type
+        if last_decision is None:
+            return decision.signal_type != SignalType.HOLD
+        return decision.signal_type != last_decision.signal_type
     
     def validate_data(self, data: pd.DataFrame) -> bool:
         """

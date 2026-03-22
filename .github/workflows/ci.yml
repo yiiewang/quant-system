@@ -1,0 +1,92 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install black flake8 mypy pytest pytest-cov
+
+    - name: Lint with flake8
+      run: |
+        # 停止构建如果有 Python 语法错误或未定义名称
+        flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        # 退出零将所有错误视为警告
+        flake8 src/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Format check with black
+      run: |
+        black --check src/ || true
+
+    - name: Type check with mypy
+      run: |
+        mypy src/ --ignore-missing-imports || true
+
+    - name: Test with pytest
+      run: |
+        pytest tests/ --cov=src --cov-report=xml --cov-report=term -v
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  build-docker:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Build Docker image
+      run: |
+        docker build -t quant-system:${{ github.sha }} .
+        docker tag quant-system:${{ github.sha }} quant-system:latest
+
+    - name: Test Docker image
+      run: |
+        docker run --rm quant-system:${{ github.sha }} python -c "import src; print('Import successful')"
+
+    - name: Save Docker image
+      run: |
+        docker save quant-system:${{ github.sha }} > quant-system.tar
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: docker-image
+        path: quant-system.tar

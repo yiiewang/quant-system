@@ -87,7 +87,7 @@ pip install -r requirements.txt
 cp .env.example .env
 
 # 编辑配置文件（可选）
-vim config/default.yaml
+vim config/system.yaml
 ```
 
 ### 3. 数据准备
@@ -124,6 +124,47 @@ python -m src.cli.main backtest \
   --strategy multi_timeframe \
   --initial-capital 1000000
 ```
+
+## 📋 策略管理
+
+所有策略文件都存放在用户配置的策略目录中（默认 `data/strategies`）。详细配置请参考 [策略配置指南](docs/CUSTOM_STRATEGIES.md)。
+
+### 快速配置
+
+1. **编辑配置文件** `config/system.yaml`：
+
+```yaml
+strategy:
+  directories:
+    - "data/strategies"   # 策略目录（可以添加多个）
+  recursive: false
+```
+
+2. **创建策略目录**：
+
+```bash
+mkdir -p data/strategies
+```
+
+3. **在目录中添加策略文件**（文件名需符合 `*_strategy.py` 或 `strategy_*.py` 命名约定）
+
+### 使用策略
+
+```bash
+# 启动交互式模式
+python -m src.cli.main interactive
+
+# 查看所有策略
+quant> strategies
+
+# 创建新策略
+quant> create-strategy my_custom
+
+# 重新加载策略（修改策略文件后）
+quant> reload-strategies
+```
+
+详细说明请查看 [docs/CUSTOM_STRATEGIES.md](docs/CUSTOM_STRATEGIES.md)
 
 ## 📋 命令参考
 

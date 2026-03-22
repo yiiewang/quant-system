@@ -8,16 +8,17 @@ from enum import Enum
 from typing import Dict, Any, List, Optional, Callable
 import pandas as pd
 
+# 导入 Frequency 用于验证
+from src.data import Frequency
+
 
 # ==================== 引擎模式 ====================
 
 class EngineMode(Enum):
     """引擎运行模式"""
-    BACKTEST = "backtest"    # 回测模式：在历史数据上运行
-    LIVE = "live"            # 实盘模式：真实交易
-    PAPER = "paper"          # 模拟模式：实时数据但模拟交易
+    BACKTEST = "backtest"    # 回测模式：历史数据重放，模拟交易计算收益
+    LIVE = "live"            # 实时模式：实时数据运行策略，发送信号通知
     ANALYZE = "analyze"      # 分析模式：一次性分析当前状态
-    MONITOR = "monitor"      # 监控模式：循环监控并发送通知
 
 
 # ==================== 引擎相关 ====================
@@ -35,40 +36,39 @@ class EngineState(Enum):
 class EngineConfig:
     """
     引擎配置
-    
+
     Attributes:
+        mode: 运行模式 (BACKTEST/LIVE/ANALYZE)
         symbols: 交易标的列表
         strategy_name: 策略名称
         strategy_params: 策略参数（由外部配置传入，Engine 负责创建策略实例）
-        mode: 运行模式 (paper=模拟, live=实盘)
         initial_capital: 初始资金
         poll_interval: 行情轮询间隔（秒）
+        frequency: 数据频率 (1min/5min/15min/30min/60min/daily/weekly/monthly)
+        data_source: 数据源 (可选，None 表示自动选择)
         max_positions: 最大持仓数量
         enable_risk_check: 是否启用风控检查
+        commission: 手续费率
+        slippage: 滑点率
     """
-    symbols: List[str]
+    mode: EngineMode = EngineMode.LIVE
+    symbols: List[str] = field(default_factory=list)
     strategy_name: str = "macd"
+    strategy_config: Optional[str] = None
     strategy_params: Dict[str, Any] = field(default_factory=dict)
-    mode: str = "paper"
     initial_capital: float = 100000.0
     poll_interval: int = 60
+    frequency: str = Frequency.DAILY  # 数据频率
+    data_source: Optional[str] = None  # 数据源 (None=自动选择)
     max_positions: int = 10
     enable_risk_check: bool = True
     commission: float = 0.0003
     slippage: float = 0.001
-    
-    def __post_init__(self):
-        """验证配置"""
-        if not self.symbols:
-            raise ValueError("交易标的列表不能为空")
-        if self.mode not in ("paper", "live"):
-            raise ValueError(f"运行模式必须是 paper 或 live，当前值: {self.mode}")
-        if self.initial_capital <= 0:
-            raise ValueError(f"初始资金必须为正数，当前值: {self.initial_capital}")
-        if self.poll_interval < 1:
-            raise ValueError(f"轮询间隔必须 >= 1 秒，当前值: {self.poll_interval}")
-
-
+    start_date: Optional[str] = None  # 回测开始日期
+    end_date: Optional[str] = None  # 回测结束日期
+    notify: bool = False  # 是否启用通知
+    days: int = 60  # 分析模式历史天数
+    data_service: Any = None  # 注入的数据服务实例（Runner统一初始化）
 # ==================== 信号相关 ====================
 
 class SignalType(Enum):
@@ -312,18 +312,69 @@ class Portfolio:
 
 
 
-# ==================== 分析结果 ====================
+# ==================== 策略决策 ====================
 
 @dataclass
-class AnalysisResult:
-    """市场分析结果"""
+class StrategyDecision:
+    """
+    策略决策结果
+    
+    统一的策略输出，包含交易信号和分析信息。
+    """
     symbol: str
-    status: str  # 上涨/下跌/震荡
-    action: str  # 买入/卖出/持有
-    confidence: float  # 置信度 0-1
-    reason: str  # 分析理由
-    indicators: Dict[str, Any] = field(default_factory=dict)  # 关键指标
-    current_price: float = 0.0  # 当前价格
+    signal_type: SignalType  # BUY/SELL/HOLD
+    price: float = 0.0
+    
+    # 分析信息
+    status: str = ""  # 市场状态描述，如 "多头趋势"
+    action: str = ""  # 建议操作，如 "买入"/"卖出"/"观望"
+    reason: str = ""  # 详细理由
+    indicators: Dict[str, Any] = field(default_factory=dict)  # 关键指标值
+    
+    # 通用字段
+    confidence: float = 1.0  # 置信度 0-1
+    strength: float = 1.0  # 信号强度
+    timestamp: datetime = field(default_factory=datetime.now)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    @classmethod
+    def hold(cls, symbol: str, reason: str = "") -> 'StrategyDecision':
+        """创建持有决策"""
+        return cls(
+            symbol=symbol,
+            signal_type=SignalType.HOLD,
+            status="观望",
+            action="持有",
+            reason=reason
+        )
+    
+    @classmethod
+    def buy(cls, symbol: str, price: float, reason: str = "", 
+            status: str = "", indicators: Optional[Dict] = None) -> 'StrategyDecision':
+        """创建买入决策"""
+        return cls(
+            symbol=symbol,
+            signal_type=SignalType.BUY,
+            price=price,
+            status=status or "买入信号",
+            action="买入",
+            reason=reason,
+            indicators=indicators or {}
+        )
+    
+    @classmethod
+    def sell(cls, symbol: str, price: float, reason: str = "",
+             status: str = "", indicators: Optional[Dict] = None) -> 'StrategyDecision':
+        """创建卖出决策"""
+        return cls(
+            symbol=symbol,
+            signal_type=SignalType.SELL,
+            price=price,
+            status=status or "卖出信号",
+            action="卖出",
+            reason=reason,
+            indicators=indicators or {}
+        )
 
 
 # ==================== 交易记录 ====================
@@ -343,12 +394,49 @@ class Trade:
 
 
 # ==================== 策略上下文 ====================
+# 从公共模块导入，避免循环导入和类型不兼容
+from src.common import StrategyContext
+
+# ==================== 通知相关 ====================
 
 @dataclass
-class StrategyContext:
-    """策略执行上下文"""
+class NotifyMessage:
+    """通知消息"""
+    title: str
+    content: str
+    message_type: str = "signal"  # signal, alert, summary
+    symbol: Optional[str] = None
+    timestamp: datetime = field(default_factory=datetime.now)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class BaseNotifier:
+    """通知器基类"""
+    
+    def send_signal(self, symbol: str, signal_type: str, price: float, 
+                    reason: str, indicators: Optional[Dict[str, Any]] = None,
+                    additional_info: Optional[Dict[str, Any]] = None, **kwargs) -> bool:
+        """发送交易信号通知"""
+        raise NotImplementedError
+    
+    def send_alert(self, title: str, message: str) -> bool:
+        """发送告警通知"""
+        raise NotImplementedError
+    
+    def send_daily_summary(self, portfolio_value: float, daily_pnl: float,
+                          positions: List[Dict], signals: List[Dict]) -> bool:
+        """发送每日汇总"""
+        raise NotImplementedError
+
+
+# ==================== 分析结果 ====================
+
+@dataclass  
+class AnalysisResult:
+    """分析结果"""
     symbol: str
-    portfolio: Portfolio
-    position: Optional[Position] = None
-    timestamp: Optional[datetime] = None
-    params: Dict[str, Any] = field(default_factory=dict)
+    signal_type: str
+    price: float
+    reason: str = ""
+    indicators: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)

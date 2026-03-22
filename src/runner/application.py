@@ -1,294 +1,122 @@
 """
 持久化的应用运行器
-持有引擎、通知、监控、事件总线等组件
+持有引擎、通知、监控、事件总线、策略管理等组件
+
+业务接口层：
+- 对外提供统一的业务操作接口
+- CLI 各模式通过调用 Runner 执行业务逻辑
+- Runner 内部协调 EngineManager 等组件完成操作
 """
-from typing import Optional, List, Dict, Any, Callable
-from datetime import datetime
+
 import logging
 
-from src.config.loader import Config, RunParams
-from src.core.models import EngineConfig, EngineMode
-from src.core.metrics import BacktestResult
-from src.core.engine import TradingEngine
-from src.core.event_bus import get_event_bus, EventType
+from src.config.schema import Config
+from src.core import EngineManager, get_engine_manager
+from src.core.event_bus import get_event_bus
+from src.notification.manager import NotificationManager
+from src.strategy.manager import StrategyManager, get_strategy_manager
+from src.data import MarketDataService, init_data_service
 
 logger = logging.getLogger(__name__)
 
 
 class ApplicationRunner:
     """
-    持久化的应用运行器
-    
+    应用运行器
+
     职责:
-    - 持有 TradingEngine 实例
+    - 持有 StrategyManager (策略管理组件)
+    - 持有 EngineManager (引擎管理器，支持多任务)
     - 持有 EventBus (全局事件总线)
     - 持有 Notification (通知组件)
-    - 持有 Monitor (监控组件)
-    - 生命周期管理 (启动/停止/重启)
-    
+
     Usage:
-        runner = ApplicationRunner(config, params)
-        runner.start('backtest')  # 启动回测模式
-        runner.stop()  # 停止
+        runner = ApplicationRunner(config)
+
+        # 启动任务（返回任务ID）
+        task_id = runner.engine_manager.start(engineConfig)
+
+        # 任务控制通过 engine_manager
+        runner.engine_manager.stop(task_id)
+        runner.engine_manager.pause(task_id)
+        status = runner.engine_manager.status(task_id)
     """
-    
-    def __init__(self, config: Config, params: RunParams):
+
+    def __init__(self, config: Config):
         """
         初始化应用运行器
-        
+
         Args:
             config: 系统配置
-            params: 运行参数
+
+        Raises:
+            Exception: 初始化失败时抛出异常
         """
         self.config = config
-        self.params = params
-        
-        # 核心组件
-        self._engine: Optional[TradingEngine] = None
-        self._event_bus = get_event_bus()
-        self._notifier = None
-        self._monitor = None
-        
-        # 应用状态
-        self._running = False
-        self._current_mode: Optional[str] = None
-        self._progress_callback: Optional[Callable[[float], None]] = None
-        
-        logger.info("应用运行器初始化完成")
-    
-    def start(self, mode: str, progress_callback: Optional[Callable[[float], None]] = None) -> Any:
-        """
-        启动应用
-        
-        Args:
-            mode: 运行模式 ('backtest', 'live', 'paper', 'analyze', 'monitor')
-            progress_callback: 进度回调函数（回测模式）
-        
-        Returns:
-            模式相关的返回值（如 BacktestResult）
-        """
-        if self._running:
-            logger.warning("应用已在运行中")
-            return None
-        
-        self._current_mode = mode
-        self._progress_callback = progress_callback
-        logger.info(f"启动应用: {mode} 模式")
-        
-        try:
-            # 初始化引擎
-            self._init_engine()
-            
-            # 初始化通知
-            self._init_notifier()
-            
-            # 订阅事件通知
-            self._subscribe_events()
-            
-            # 根据模式运行
-            result = self._run_mode(mode)
-            
-            self._running = False
-            return result
-            
-        except Exception as e:
-            logger.error(f"应用启动失败: {e}")
-            self._running = False
-            raise
-    
-    def stop(self) -> None:
-        """停止应用"""
-        if not self._running:
-            return
-        
-        logger.info("正在停止应用...")
-        
-        # 停止引擎
-        if self._engine:
-            self._engine.stop()
-        
-        self._running = False
-        self._current_mode = None
-        
-        logger.info("应用已停止")
-    
-    def pause(self) -> None:
-        """暂停应用"""
-        if self._engine:
-            self._engine.pause()
-    
-    def resume(self) -> None:
-        """恢复应用"""
-        if self._engine:
-            self._engine.resume()
-    
-    def get_status(self) -> Dict[str, Any]:
-        """
-        获取应用状态
-        
-        Returns:
-            Dict: 状态信息
-        """
-        engine_status = self._engine.get_status() if self._engine else {}
-        
-        return {
-            'running': self._running,
-            'mode': self._current_mode,
-            'notifier_enabled': self._notifier is not None,
-            'engine': engine_status
-        }
-    
-    def _init_engine(self) -> None:
-        """初始化交易引擎"""
-        # Runner 只负责组装配置，策略的创建完全交给 Engine
-        yaml_symbols = self.config.get_raw('engine', 'symbols', default=[])
-        symbols = self.params.symbols if self.params.symbols else yaml_symbols
 
-        engine_config = EngineConfig(
-            symbols=symbols or ['000001.SZ'],
-            strategy_name=self.config.strategy.name,
-            strategy_params=self.config.strategy.params or {},
-            mode='paper',
-            initial_capital=self.params.initial_capital,
-            poll_interval=self.params.interval or 60,
-            max_positions=10,
-            enable_risk_check=True,
-            commission=self.config.strategy.commission if hasattr(self.config.strategy, 'commission') else 0.0003,
-            slippage=self.config.strategy.slippage if hasattr(self.config.strategy, 'slippage') else 0.001,
+        try:
+            # 分阶段初始化核心组件
+            self._init_event_bus()
+            self._init_data_service()
+            self._init_engine_manager()
+            self._init_strategy_manager()
+            self._init_notifier()
+
+            logger.info("应用运行器初始化完成")
+        except Exception as e:
+            logger.error(f"应用运行器初始化失败: {e}")
+            raise
+
+    def _init_event_bus(self) -> None:
+        """初始化事件总线"""
+        logger.info("正在初始化事件总线...")
+        self._event_bus = get_event_bus()
+        logger.info("事件总线初始化完成")
+
+    def _init_engine_manager(self) -> None:
+        """初始化引擎管理器"""
+        logger.info("正在初始化引擎管理器...")
+        engine_config = self.config.engine
+        self._engine_manager = get_engine_manager(engine_config, self._event_bus, self._data_service)
+        logger.info(
+            f"引擎管理器初始化完成: "
+            f"max_concurrent={engine_config.max_concurrent_tasks}, "
+            f"max_total={engine_config.max_total_tasks}, "
+            f"timeout={engine_config.default_task_timeout}s"
         )
 
-        self._engine = TradingEngine(engine_config, self._event_bus)
-        logger.info(f"交易引擎已初始化: {engine_config.strategy_name}")
-    
+    def _init_strategy_manager(self) -> None:
+        """初始化策略管理器"""
+        logger.info("正在初始化策略管理器...")
+        self._strategy_manager = get_strategy_manager(config=self.config.strategy)
+        logger.info(f"策略管理器初始化完成，策略目录: {self.config.strategy.directory}")
+
     def _init_notifier(self) -> None:
         """初始化通知服务"""
-        if not self.params.notify:
-            logger.info("通知服务未启用 (--notify=false)")
-            return
-        
-        notif_config = self.config.notification
-        if not notif_config or not notif_config.enabled:
-            logger.info("通知配置未启用")
-            return
-        
-        notifiers = []
-        
-        # 邮件通知
-        try:
-            email_cfg = notif_config.email if notif_config.email else {}
-            if email_cfg.get('enabled', False):
-                from src.notification.email_notifier import EmailNotifier, EmailConfig
-                recipients = email_cfg.get('recipients', [])
-                if recipients:
-                    ec = EmailConfig(recipients=recipients)
-                    if ec.username and ec.password:
-                        notifiers.append(EmailNotifier(ec))
-                        logger.info("邮件通知已启用")
-        except Exception as e:
-            logger.warning(f"初始化邮件通知失败: {e}")
-        
-        # Webhook 通知
-        try:
-            webhook_cfg = notif_config.webhook if notif_config.webhook else {}
-            webhook_url = webhook_cfg.get('url', '')
-            if webhook_url:
-                from src.notification.webhook_notifier import WebhookNotifier, WebhookConfig
-                wh_config = WebhookConfig(
-                    url=webhook_url,
-                    type=webhook_cfg.get('type', ''),
-                )
-                notifiers.append(WebhookNotifier(wh_config))
-                logger.info("Webhook 通知已启用")
-        except Exception as e:
-            logger.warning(f"初始化 Webhook 通知失败: {e}")
-        
-        if not notifiers:
-            logger.info("无可用通知渠道")
-            return
-        
-        if len(notifiers) == 1:
-            self._notifier = notifiers[0]
+        logger.info("正在初始化通知服务...")
+        self._notifier = NotificationManager(self.config.notification)
+        if self._notifier.is_enabled():
+            logger.info("通知服务已启用")
         else:
-            self._notifier = _MultiNotifier(notifiers)
-    
-    def _subscribe_events(self) -> None:
-        """订阅事件以发送通知"""
-        if not self._notifier:
-            return
-        
-        # 订阅订单成交事件
-        def on_order_filled(event_data):
-            try:
-                self._notifier.send_signal(**event_data.get('order', {}))
-            except Exception as e:
-                logger.error(f"发送通知失败: {e}")
-        
-        self._event_bus.subscribe(EventType.ORDER_FILLED, on_order_filled)
-        logger.info("事件通知已订阅")
-    
-    def _run_mode(self, mode: str) -> Any:
-        """
-        根据模式运行引擎
-        
-        Args:
-            mode: 运行模式
-        
-        Returns:
-            模式相关的返回值
-        """
-        self._running = True
-        
-        if mode == 'backtest':
-            # 解析日期
-            if not self.params.start_date or not self.params.end_date:
-                raise ValueError("回测模式需要指定 --start 和 --end 日期")
-            
-            start_date = datetime.strptime(self.params.start_date, '%Y-%m-%d')
-            end_date = datetime.strptime(self.params.end_date, '%Y-%m-%d')
-            
-            return self._engine.run_backtest(start_date, end_date, self._progress_callback)
-        
-        elif mode == 'live':
-            return self._engine.run_live()
-        
-        elif mode == 'paper':
-            self._engine.run_paper()
-            return None
-        
-        elif mode == 'analyze':
-            symbols = self.params.symbols or self.config.strategy.symbols
-            if not symbols:
-                raise ValueError("分析模式需要指定标的")
-            return self._engine.run_analyze(symbols[0], self.params.days or 60)
-        
-        elif mode == 'monitor':
-            symbols = self.params.symbols or self.config.strategy.symbols
-            if not symbols:
-                raise ValueError("监控模式需要指定标的")
-            
-            # 定义通知回调
-            notify_callback = None
-            if self._notifier:
-                notify_callback = lambda data: self._notifier.send_signal(**data)
-            
-            self._engine.run_monitor(symbols, self.params.interval or 60, notify_callback)
-            return None
-        
-        else:
-            raise ValueError(f"未知的运行模式: {mode}")
+            logger.info("通知服务未启用")
 
+    def _init_data_service(self) -> None:
+        """初始化数据服务（全局共享）"""
+        logger.info("正在初始化数据服务...")
+        self._data_service = init_data_service(self.config.data)
+        logger.info(f"数据服务初始化完成: {type(self._data_service).__name__}")
 
-class _MultiNotifier:
-    """组合多个通知渠道"""
-    
-    def __init__(self, notifiers: list):
-        self._notifiers = notifiers
-    
-    def send_signal(self, **kwargs) -> bool:
-        return all(n.send_signal(**kwargs) for n in self._notifiers)
-    
-    def send_daily_summary(self, **kwargs) -> bool:
-        return all(n.send_daily_summary(**kwargs) for n in self._notifiers)
-    
-    def send_alert(self, title: str, message: str) -> bool:
-        return all(n.send_alert(title, message) for n in self._notifiers)
+    @property
+    def engine_manager(self) -> EngineManager:
+        """获取引擎管理器（直接访问以控制任务）"""
+        return self._engine_manager
+
+    @property
+    def strategy_manager(self) -> StrategyManager:
+        """获取策略管理器（直接访问以管理策略）"""
+        return self._strategy_manager
+
+    @property
+    def data_service(self):
+        """获取数据服务（全局共享实例）"""
+        return self._data_service

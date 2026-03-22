@@ -1,0 +1,39 @@
+# AAA 策略配置文件
+# 配置结构定义在 aaa_strategy.py 的 AaaConfig 类中
+
+# 策略基本信息
+strategy:
+  name: "aaa"
+  params:
+    period: 20
+    threshold: 0.02
+  # 数据频率: 1min, 5min, 15min, 30min, 60min, daily, weekly, monthly
+  data_frequency: "1min"
+
+# 风控配置
+risk:
+  max_position_pct: 0.3      # 单票最大仓位 30%
+  stop_loss_pct: 0.05        # 止损 5%
+  take_profit_pct: 0.15      # 止盈 15%
+  max_drawdown: 0.2          # 最大回撤 20%
+
+# 交易配置
+trading:
+  commission: 0.0003         # 佣金率
+  slippage: 0.001            # 滑点
+
+# 回测配置
+backtest:
+  start_date: "2024-01-01"
+  end_date: "2024-12-31"
+  initial_capital: 1000000
+
+# 通知配置（系统级 SMTP/Webhook 在 config/system.yaml 中配置）
+notification:
+  enabled: true  # 该策略是否发送通知
+  
+  email:
+    recipients: ["cloaks@qq.com"]  # 收件人列表
+  
+  webhook:
+    url: ""  # 可选：覆盖默认 webhook 地址

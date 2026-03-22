@@ -33,11 +33,12 @@ class StrategyRegistry:
     """
     
     _instance: Optional['StrategyRegistry'] = None
+    _strategies: Dict[str, Type]
     
     def __new__(cls) -> 'StrategyRegistry':
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._strategies: Dict[str, Type] = {}
+            cls._instance._strategies = {}
         return cls._instance
     
     def register(self, name: str, strategy_cls: Type) -> None:
@@ -77,19 +78,20 @@ class StrategyRegistry:
             raise KeyError(f"策略 '{name}' 未注册。可用策略: {available}")
         return self._strategies[name]
     
-    def create(self, name: str, params: Dict[str, Any] = None) -> Any:
+    def create(self, name: str, params: Optional[Dict[str, Any]] = None, config: Any = None) -> Any:
         """
         创建策略实例
         
         Args:
             name: 策略名称
             params: 策略参数（与默认参数合并）
+            config: 结构化配置对象
         
         Returns:
             策略实例
         """
         strategy_cls = self.get(name)
-        return strategy_cls(params=params)
+        return strategy_cls(params=params, config=config)
     
     def has(self, name: str) -> bool:
         """是否已注册"""

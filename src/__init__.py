@@ -12,7 +12,7 @@ __version__ = "1.0.0"
 __author__ = "Cloaks"
 
 from src.core.models import Signal, SignalType, Order, OrderType, OrderSide, Position, Portfolio
-from src.core.engine import TradingEngine
+from src.core.base_engine import BaseEngine
 from src.core.event_bus import EventBus, EventType
 
 __all__ = [
@@ -23,7 +23,7 @@ __all__ = [
     "OrderSide",
     "Position",
     "Portfolio",
-    "TradingEngine",
+    "BaseEngine",
     "EventBus",
     "EventType",
 ]
