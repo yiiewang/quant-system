@@ -7,13 +7,13 @@ from datetime import datetime, timedelta
 import logging
 
 from .models import (
-    EngineConfig,
     EngineMode,
     Portfolio,
     StrategyContext,
+    TaskConfig,
 )
 from .base_engine import BaseEngine
-from .event_bus import EventBus
+from .event_bus import EventBus, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class AnalyzeEngine(BaseEngine):
             self._stop_flag.clear()
 
             self.event_bus.emit(
-                type="engine.started",
+                EventType.ENGINE_STARTED,
                 mode="analyze",
                 timestamp=datetime.now(),
                 config=self.config.__dict__,
@@ -70,6 +70,9 @@ class AnalyzeEngine(BaseEngine):
             data = self._data_service.get_history(symbol, start_date, end_date)
             if data is None or data.empty:
                 return {"error": f"无法获取 {symbol} 的数据"}
+
+            if self._strategy is None:
+                return {"error": "策略未初始化"}
 
             data = self._strategy.calculate_indicators(data)
 

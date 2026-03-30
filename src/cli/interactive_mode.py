@@ -5,27 +5,24 @@
 通过 IRunner 接口执行业务逻辑。
 """
 import os
-from typing import List, TYPE_CHECKING
-
-from .execution_modes import ExecutionMode
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from src.runner.interfaces import IRunner, CommandResult
 
 
-class InteractiveMode(ExecutionMode):
+class InteractiveMode:
     """
     本地交互式模式
     
     在终端持续执行命令，通过 IRunner 接口调用。
-    继承基类的统一命令分发逻辑。
     """
-    
-    def __init__(self, runner: "IRunner" = None):
-        super().__init__(runner)
+
+    def __init__(self, runner: Optional["IRunner"] = None):
+        self._runner = runner
         self.running = False
         self._setup_readline()
-    
+
     def _setup_readline(self):
         """配置readline支持历史记录"""
         try:
@@ -33,57 +30,96 @@ class InteractiveMode(ExecutionMode):
             readline.parse_and_bind("tab: complete")
         except ImportError:
             pass
-    
+
     @property
     def name(self) -> str:
         return "interactive"
-    
+
     @property
     def description(self) -> str:
         return "本地交互式REPL模式"
-    
-    def _parse_args(self, command: str, args: List[str], base_kwargs: dict) -> dict:
+
+    def execute(self, command: str, args: Optional[list] = None, **kwargs) -> "CommandResult":
         """
-        解析交互式输入参数
+        执行命令
         
-        与 CommandMode 类似，但支持更灵活的输入格式。
+        解析参数并调用 IRunner 对应方法。
         """
-        result = {}
+        from src.runner.interfaces import CommandResult
         
-        # run 命令参数解析
+        if self._runner is None:
+            return CommandResult(success=False, error="Runner 未初始化")
+        
+        # 解析参数
+        if args:
+            parsed = self._parse_args(command, args)
+            parsed.update(kwargs)
+            kwargs = parsed
+
+        # 命令分发
+        if command == "run":
+            return self._runner.run(**kwargs)
+
+        if command == "analyze":
+            kwargs["mode"] = "analyze"
+            return self._runner.run(**kwargs)
+
+        if command == "backtest":
+            kwargs["mode"] = "backtest"
+            return self._runner.run(**kwargs)
+
+        if command == "live":
+            kwargs["mode"] = "live"
+            return self._runner.run(**kwargs)
+
+        if command == "strategies":
+            return self._runner.list_strategies()
+
+        if command == "reload-strategies":
+            return self._runner.reload_strategies()
+
+        if command == "list-strategy-files":
+            return self._runner.list_strategy_files()
+
+        if command == "create-strategy":
+            name = kwargs.get("name")
+            if not name:
+                return CommandResult(success=False, error="缺少策略名称")
+            return self._runner.create_strategy(name)
+
+        if command == "delete-strategy":
+            name = kwargs.get("name")
+            if not name:
+                return CommandResult(success=False, error="缺少策略名称")
+            return self._runner.delete_strategy(name)
+
+        if command == "sync":
+            return self._runner.sync_data(**kwargs)
+
+        if command == "data":
+            return self._runner.get_data_info(**kwargs)
+
+        return CommandResult(success=False, error=f"未知命令: {command}")
+
+    def _parse_args(self, command: str, args: list) -> dict:
+        """解析命令参数"""
         if command in ("run", "analyze", "backtest", "live"):
-            result = self._parse_run_args(args)
-        
-        # sync 命令
+            return self._parse_run_args(args)
         elif command == "sync":
-            result = self._parse_sync_args(args)
-        
-        # data 命令
+            return self._parse_sync_args(args)
         elif command == "data":
-            result = self._parse_data_args(args)
-        
-        # create-strategy/delete-strategy 命令
+            return self._parse_data_args(args)
         elif command in ("create-strategy", "delete-strategy"):
             if args:
-                result["name"] = args[0]
-        
-        # 默认解析
-        else:
-            result = super()._parse_args(command, args, {})
-        
-        # 合并 base_kwargs
-        result.update(base_kwargs)
-        
-        return result
-    
-    def _parse_run_args(self, args: List[str]) -> dict:
+                return {"name": args[0]}
+        return {}
+
+    def _parse_run_args(self, args: list) -> dict:
         """解析 run 命令参数"""
-        result = {"symbols": []}
-        
+        result: dict = {"symbols": []}
         i = 0
         while i < len(args):
             arg = args[i]
-            
             if arg == "--strategy" and i + 1 < len(args):
                 result["strategy"] = args[i + 1]
                 i += 2
@@ -113,17 +149,14 @@ class InteractiveMode(ExecutionMode):
                 i += 1
             else:
                 i += 1
-        
         return result
-    
-    def _parse_sync_args(self, args: List[str]) -> dict:
+
+    def _parse_sync_args(self, args: list) -> dict:
         """解析 sync 命令参数"""
         result = {"symbols": [], "frequency": "daily", "days": 365}
-        
         i = 0
         while i < len(args):
             arg = args[i]
-            
             if arg == "--freq" and i + 1 < len(args):
                 result["frequency"] = args[i + 1]
                 i += 2
@@ -135,15 +168,14 @@ class InteractiveMode(ExecutionMode):
                 i += 1
             else:
                 i += 1
-        
         return result
-    
-    def _parse_data_args(self, args: List[str]) -> dict:
+
+    def _parse_data_args(self, args: list) -> dict:
         """解析 data 命令参数"""
         if args and not args[0].startswith("--"):
             return {"symbol": args[0]}
         return {}
-    
+
     def start(self):
         """启动交互式REPL"""
         from .main import Colors
@@ -155,9 +187,9 @@ class InteractiveMode(ExecutionMode):
         if not self._runner:
             config = load_config(Config)
             self._runner = ApplicationRunner(config)
-        
+
         self.running = True
-        
+
         def print_help():
             """打印帮助信息"""
             print(f"\n{Colors.HEADER}{'='*60}{Colors.ENDC}")
@@ -177,39 +209,39 @@ class InteractiveMode(ExecutionMode):
             print("  help                    显示帮助")
             print("  clear                   清屏")
             print("  exit                    退出\n")
-        
+
         # 显示欢迎信息
         print_help()
-        
+
         while self.running:
             try:
                 cmd_input = input(f"{Colors.OKGREEN}quant> {Colors.ENDC}").strip()
-                
+
                 if not cmd_input:
                     continue
-                
+
                 # 解析命令
                 parts = cmd_input.split()
                 command = parts[0].lower()
                 args = parts[1:]
-                
+
                 # 处理特殊命令
                 if command in ('exit', 'quit', 'q'):
                     print(f"\n{Colors.OKGREEN}再见！{Colors.ENDC}\n")
                     self.running = False
                     break
-                
+
                 if command == 'help':
                     print_help()
                     continue
-                
+
                 if command == 'clear':
                     os.system('clear' if os.name == 'posix' else 'cls')
                     continue
-                
-                # 执行业务命令（通过基类的统一分发）
+
+                # 执行业务命令
                 result = self.execute(command, args)
-                
+
                 # 输出结果
                 if not result.success and result.error:
                     print(f"{Colors.FAIL}错误: {result.error}{Colors.ENDC}")
@@ -221,7 +253,7 @@ class InteractiveMode(ExecutionMode):
                 elif result.data:
                     import json
                     print(json.dumps(result.data, indent=2, ensure_ascii=False, default=str))
-                
+
             except KeyboardInterrupt:
                 print(f"\n{Colors.WARNING}使用 'exit' 命令退出{Colors.ENDC}")
             except EOFError:

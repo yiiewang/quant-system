@@ -23,7 +23,7 @@
     - OrderSide: 订单方向
     - OrderType: 订单类型
     - Portfolio: 持仓组合
-    - EngineConfig: 引擎配置
+    - TaskConfig: 任务配置
     - EngineMode: 引擎模式 (BACKTEST/LIVE/ANALYZE)
     - EngineState: 引擎状态
     
@@ -55,7 +55,7 @@ from .models import (
     OrderSide,
     OrderType,
     Portfolio,
-    EngineConfig,
+    TaskConfig,
     EngineMode,
     EngineState,
 )
@@ -85,7 +85,7 @@ __all__ = [
     'OrderSide',
     'OrderType',
     'Portfolio',
-    'EngineConfig',
+    'TaskConfig',
     'EngineMode',
     'EngineState',
     # 指标

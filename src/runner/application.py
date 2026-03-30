@@ -14,7 +14,7 @@ from typing import Optional, List
 from src.config.schema import Config
 from src.core import EngineManager, get_engine_manager
 from src.core.event_bus import get_event_bus
-from src.core.models import EngineConfig, EngineMode
+from src.core.models import EngineMode, TaskConfig
 from src.notification.manager import NotificationManager
 from src.strategy.manager import StrategyManager, get_strategy_manager
 from src.data import get_data_service
@@ -70,8 +70,12 @@ class ApplicationRunner:
         """初始化引擎管理器"""
         logger.info("正在初始化引擎管理器...")
         engine_config = self.config.engine
+        # 从系统配置获取通知配置
+        notification_config = None
+        if self.config.notification and self.config.notification.enabled:
+            notification_config = self.config.notification
         self._engine_manager = get_engine_manager(
-            engine_config, self._event_bus, self._data_service
+            engine_config, self._event_bus, self._data_service, notification_config
         )
         logger.info(
             f"引擎管理器初始化完成: "
@@ -126,134 +130,60 @@ class ApplicationRunner:
 
     def run(
         self,
-        mode: str,
+        mode: EngineMode,
         strategy: str,
         symbols: list,
-        strategy_config: str = None,
-        start_date: str = None,
-        end_date: str = None,
-        days: int = 365,
+        strategy_config: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         initial_capital: float = 1000000,
         interval: int = 60,
-        notify: bool = False,
-        **kwargs
+        frequency: str = "daily",
     ) -> CommandResult:
         """
         运行策略（IRunner 接口实现）
         
-        根据 mode 构建 EngineConfig，通过 engine_manager 启动任务。
+        根据 mode 构建 TaskConfig，通过 engine_manager 启动任务。
         """
-        import time
         
         # 参数校验
         if not symbols:
             return CommandResult(success=False, error="缺少标的参数")
-        
-        if mode == "backtest" and (not start_date or not end_date):
+
+        if mode == EngineMode.BACKTEST and (not start_date or not end_date):
             return CommandResult(success=False, error="回测模式需要指定 start_date 和 end_date")
-        
-        # 获取通知配置
-        notification_config = None
-        if notify or (self.config.notification and self.config.notification.enabled):
-            notification_config = self.config.notification
-        
-        # 构建 EngineConfig
-        mode_map = {
-            "backtest": EngineMode.BACKTEST,
-            "analyze": EngineMode.ANALYZE,
-            "live": EngineMode.LIVE,
-        }
-        engine_mode = mode_map.get(mode)
-        if not engine_mode:
-            return CommandResult(success=False, error=f"不支持的运行模式: {mode}")
-        
-        config = EngineConfig(
-            mode=engine_mode,
+
+        # 构建 TaskConfig（直接包含所有引擎配置）
+        # 注意：data_service 和 notification_config 由 EngineManager 从系统配置注入
+        task_config = TaskConfig(
+            mode=mode,
             symbols=symbols,
             strategy_name=strategy,
             strategy_config=strategy_config,
             initial_capital=initial_capital,
             start_date=start_date,
             end_date=end_date,
-            days=days,
             poll_interval=interval,
-            frequency=kwargs.get("frequency", "daily"),
-            notify=notify or (notification_config is not None),
-            notification_config=notification_config,
-            data_service=self._data_service,
+            frequency=frequency,
+            timeout=None,  # CLI 模式下不设置超时，由 CLI 自己控制
         )
         
         try:
-            task_id = self._engine_manager.start(config)
+            # 统一启动任务，返回 task_id
+            task_id = self._engine_manager.start(task_config)
             
-            # live 模式：保持运行
-            if mode == "live":
-                return self._run_live_mode(task_id, symbols)
-            
-            # backtest/analyze：同步等待结果
-            timeout = 600 if mode == "backtest" else 120
-            return self._wait_for_result(task_id, timeout=timeout)
+            return CommandResult(
+                success=True,
+                data={
+                    "task_id": task_id,
+                    "mode": mode.value,
+                    "symbols": symbols,
+                }
+            )
             
         except Exception as e:
             logger.error(f"运行策略失败: {e}", exc_info=True)
             return CommandResult(success=False, error=str(e))
-
-    def _wait_for_result(self, task_id: str, timeout: int = 300) -> CommandResult:
-        """同步等待任务完成"""
-        from src.core.engine_manager import TaskStatus
-        
-        poll_interval = 0.5
-        elapsed = 0
-        
-        while elapsed < timeout:
-            status_info = self._engine_manager.status(task_id)
-            
-            if status_info is None:
-                return CommandResult(success=False, error=f"任务 {task_id} 不存在")
-            
-            task_status = status_info.get("status")
-            
-            if task_status == TaskStatus.STOPPED.value:
-                result = self._engine_manager.get_result(task_id)
-                return CommandResult(success=True, data=result)
-            
-            if task_status == TaskStatus.ERROR.value:
-                error = status_info.get("error", "未知错误")
-                return CommandResult(success=False, error=error)
-            
-            import time
-            time.sleep(poll_interval)
-            elapsed += poll_interval
-        
-        self._engine_manager.stop(task_id)
-        return CommandResult(success=False, error=f"任务超时 ({timeout}s)")
-
-    def _run_live_mode(self, task_id: str, symbols: list) -> CommandResult:
-        """运行实时模式"""
-        import time
-        import sys
-        from src.core.engine_manager import TaskStatus
-        
-        print(f"\n✓ 实时任务已启动 (task_id={task_id})")
-        print(f"  监控标的: {', '.join(symbols)}")
-        print(f"\n按 Ctrl+C 停止...\n")
-        sys.stdout.flush()
-        
-        try:
-            while True:
-                time.sleep(1)
-                status_info = self._engine_manager.status(task_id)
-                if status_info and status_info.get("status") == "error":
-                    error = status_info.get("error", "未知错误")
-                    return CommandResult(success=False, error=f"任务异常: {error}")
-        except KeyboardInterrupt:
-            print("\n\n正在停止实时任务...")
-            self._engine_manager.stop(task_id)
-            return CommandResult(
-                success=True,
-                message="实时任务已停止",
-                data={"task_id": task_id},
-            )
 
     # ──────────────────────────────────────────────────────────────────
     # IRunner 接口实现：策略管理
@@ -396,7 +326,7 @@ class {name.capitalize()}Strategy(BaseStrategy):
         except Exception as e:
             return CommandResult(success=False, error=str(e))
 
-    def get_data_info(self, symbol: str = None) -> CommandResult:
+    def get_data_info(self, symbol: Optional[str] = None) -> CommandResult:
         """查看数据信息"""
         try:
             if symbol:

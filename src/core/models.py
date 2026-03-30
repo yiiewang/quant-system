@@ -66,10 +66,75 @@ class EngineConfig:
     slippage: float = 0.001
     start_date: Optional[str] = None  # 回测开始日期
     end_date: Optional[str] = None  # 回测结束日期
-    notify: bool = False  # 是否启用通知
-    notification_config: Any = None  # 通知配置对象 (NotificationConfig)
     days: int = 60  # 分析模式历史天数
-    data_service: Any = None  # 注入的数据服务实例（Runner统一初始化）
+
+
+@dataclass
+class TaskConfig:
+    """
+    任务启动配置
+
+    用于 EngineManager.start() 方法，直接包含引擎运行所需的所有配置。
+
+    Attributes:
+        # 核心配置
+        mode: 运行模式 (BACKTEST/LIVE/ANALYZE)
+        symbols: 交易标的列表
+        strategy_name: 策略名称
+        strategy_config: 策略配置文件路径
+        
+        # 资金和交易配置
+        initial_capital: 初始资金
+        poll_interval: 行情轮询间隔（秒）
+        frequency: 数据频率
+        
+        # 时间范围（回测/分析用）
+        start_date: 回测开始日期
+        end_date: 回测结束日期
+        
+        # 分析模式参数
+        days: 分析模式历史天数
+        
+        # 任务级别配置
+        timeout: 任务超时时间（秒），None 表示无限制
+        metadata: 任务元数据（用于追踪、日志等）
+    """
+    # 核心配置
+    mode: EngineMode = EngineMode.LIVE
+    symbols: List[str] = field(default_factory=list)
+    strategy_name: str = "macd"
+    strategy_config: Optional[str] = None
+    strategy_params: Dict[str, Any] = field(default_factory=dict)
+    
+    # 资金和交易配置
+    initial_capital: float = 100000.0
+    poll_interval: int = 60
+    frequency: str = Frequency.DAILY
+    
+    # 数据源和风控
+    data_source: Optional[str] = None
+    max_positions: int = 10
+    enable_risk_check: bool = True
+    commission: float = 0.0003
+    slippage: float = 0.001
+    
+    # 时间范围
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    
+    # 分析模式参数
+    days: int = 60
+    
+    # 任务级别配置
+    timeout: Optional[int] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """验证配置"""
+        if self.timeout is not None and self.timeout <= 0:
+            raise ValueError("timeout 必须大于 0")
+
+
 # ==================== 信号相关 ====================
 
 class SignalType(Enum):

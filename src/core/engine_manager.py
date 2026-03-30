@@ -11,10 +11,11 @@ import threading
 import uuid
 import logging
 
-from .models import EngineConfig, EngineMode
+from .models import EngineMode, TaskConfig
 from .base_engine import BaseEngine
 from .event_bus import EventBus
 from src.config.schema import EngineManagerConfig
+from src.data import IMarketDataService
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ class EngineTask:
 
     Attributes:
         task_id: 任务唯一标识
-        config: 引擎配置
+        config: 任务配置（包含引擎运行所需的所有参数）
         engine: 交易引擎实例
         status: 任务状态
         mode: 运行模式
@@ -50,7 +51,7 @@ class EngineTask:
     """
 
     task_id: str
-    config: EngineConfig
+    config: TaskConfig
     engine: BaseEngine
     status: TaskStatus = TaskStatus.PENDING
     mode: Optional[EngineMode] = None
@@ -126,7 +127,8 @@ class EngineManager:
         self,
         event_bus: EventBus,
         config: EngineManagerConfig,
-        data_service=None,
+        data_service: IMarketDataService,
+        notification_config=None,
     ):
         """
         初始化引擎管理器
@@ -134,12 +136,14 @@ class EngineManager:
         Args:
             event_bus: 事件总线
             config: 引擎管理器配置对象
-            data_service: 共享数据服务实例（可选）
+            data_service: 共享数据服务实例（必需）
+            notification_config: 通知配置（从系统配置传入）
         """
         self._tasks: Dict[str, EngineTask] = {}
         self._lock = threading.RLock()
         self._event_bus = event_bus
-        self._data_service = data_service  # 共享数据服务
+        self._data_service = data_service  # 共享数据服务（必需）
+        self._notification_config = notification_config  # 通知配置
 
         # 限制配置
         self._max_concurrent_tasks = config.max_concurrent_tasks
@@ -160,17 +164,15 @@ class EngineManager:
 
     def start(
         self,
-        config: EngineConfig,
+        task_config: TaskConfig,
         progress_callback: Optional[Callable[[float], None]] = None,
-        max_runtime: Optional[int] = None,
     ) -> str:
         """
         启动引擎任务
 
         Args:
-            config: 引擎配置（包含 mode, symbols, strategy_name 等）
+            task_config: 任务启动配置（包含引擎配置和任务元数据）
             progress_callback: 进度回调（回测模式）
-            max_runtime: 最大运行时间（秒，None表示使用默认值）
 
         Returns:
             str: 任务ID
@@ -178,10 +180,29 @@ class EngineManager:
         Raises:
             ValueError: 配置无效
             RuntimeError: 启动失败，或达到任务数限制
-
-        Note:
-            如果 EngineManager 初始化时提供了 data_service，会自动注入到 config
         """
+        # 1. 检查限制
+        self._check_limits()
+
+        # 2. 创建任务（包含生成ID、创建引擎、注入依赖）
+        task = self._create_task(task_config, progress_callback)
+
+        # 3. 注册任务
+        with self._lock:
+            self._tasks[task.task_id] = task
+
+        # 4. 启动任务
+        try:
+            self._launch_task(task, progress_callback)
+            return task.task_id
+
+        except Exception as e:
+            task._mark_failed(str(e))
+            logger.error(f"任务 {task.task_id} 启动失败: {e}")
+            raise RuntimeError(f"启动任务失败: {e}")
+
+    def _check_limits(self) -> None:
+        """检查任务数限制，超限则抛出异常"""
         with self._lock:
             # 1. 检查总任务数限制
             if len(self._tasks) >= self._max_total_tasks:
@@ -201,57 +222,68 @@ class EngineManager:
                     f"已达到最大并发任务数限制: {self._max_concurrent_tasks}"
                 )
 
+    def _create_task(
+        self,
+        task_config: TaskConfig,
+        progress_callback: Optional[Callable[[float], None]] = None,
+    ) -> EngineTask:
+        """
+        创建任务对象
+
+        包含：生成ID、注入依赖、创建引擎实例
+        """
         # 生成任务ID
-        task_id = self._generate_task_id(config)
+        task_id = self._generate_task_id(task_config)
 
         # 确定超时时间
+        max_runtime = task_config.timeout
         task_timeout = (
             max_runtime if max_runtime is not None else self._default_task_timeout
         )
 
-        # 自动注入数据服务（如果 EngineManager 有而 config 没有）
-        if self._data_service is not None and config.data_service is None:
-            config.data_service = self._data_service
+        # 创建引擎实例（工厂方法），注入数据服务和通知配置
+        engine = self._create_engine(
+            config=task_config,
+            event_bus=self._event_bus,
+            data_service=self._data_service,
+            notification_config=self._notification_config,
+        )
 
-        # 创建引擎实例（工厂方法）
-        engine = self._create_engine(config=config, event_bus=self._event_bus)
-
-        # 创建任务
+        # 创建任务对象
         task = EngineTask(
             task_id=task_id,
-            config=config,
+            config=task_config,
             engine=engine,
             status=TaskStatus.PENDING,
             max_runtime=task_timeout,
             _progress_callback=progress_callback,
         )
 
-        with self._lock:
-            self._tasks[task_id] = task
+        return task
 
-        # 启动任务
-        try:
-            task.status = TaskStatus.RUNNING
-            task.started_at = datetime.now()
-            mode = config.mode
-            task.mode = mode
+    def _launch_task(
+        self,
+        task: EngineTask,
+        progress_callback: Optional[Callable[[float], None]] = None,
+    ) -> None:
+        """
+        启动已创建的任务
 
-            logger.info(
-                f"启动任务 {task_id}: mode={mode.value}, strategy={config.strategy_name}"
-            )
+        设置状态、启动引擎后台线程
+        """
+        task.status = TaskStatus.RUNNING
+        task.started_at = datetime.now()
+        task.mode = task.config.mode
 
-            # 设置事件订阅
-            task.engine.setup_event_subscriptions(task_id)
+        logger.info(
+            f"启动任务 {task.task_id}: mode={task.mode.value}, strategy={task.config.strategy_name}"
+        )
 
-            # 统一启动引擎（各引擎根据 mode 自行处理参数）
-            self._start_engine_task(task, progress_callback)
+        # 设置事件订阅
+        task.engine.setup_event_subscriptions(task.task_id)
 
-            return task_id
-
-        except Exception as e:
-            task._mark_failed(str(e))
-            logger.error(f"任务 {task_id} 启动失败: {e}")
-            raise RuntimeError(f"启动任务失败: {e}")
+        # 统一启动引擎（各引擎根据 mode 自行处理参数）
+        self._start_engine_task(task, progress_callback)
 
     def stop(self, task_id: str) -> bool:
         """
@@ -283,7 +315,7 @@ class EngineManager:
             logger.error(f"停止任务 {task_id} 失败: {e}")
             return False
 
-    def reload(self, task_id: str, new_config: EngineConfig) -> bool:
+    def reload(self, task_id: str, new_config: TaskConfig) -> bool:
         """
         重新加载任务配置
 
@@ -311,7 +343,9 @@ class EngineManager:
             logger.info(f"重新加载任务 {task_id}")
 
             # 创建新引擎（工厂方法）
-            new_engine = self._create_engine(new_config, self._event_bus)
+            new_engine = self._create_engine(
+                new_config, self._event_bus, self._data_service, self._notification_config
+            )
 
             # 更新任务
             task.config = new_config
@@ -524,19 +558,26 @@ class EngineManager:
         with self._lock:
             return self._tasks.get(task_id)
 
-    def _generate_task_id(self, config: EngineConfig) -> str:
+    def _generate_task_id(self, config: TaskConfig) -> str:
         """生成任务ID"""
         prefix = config.strategy_name[:8] if config.strategy_name else "task"
         return f"{prefix}_{uuid.uuid4().hex[:8].upper()}"
 
     @staticmethod
-    def _create_engine(config: EngineConfig, event_bus: EventBus) -> BaseEngine:
+    def _create_engine(
+        config: TaskConfig,
+        event_bus: EventBus,
+        data_service: IMarketDataService,
+        notification_config=None,
+    ) -> BaseEngine:
         """
         工厂方法：根据配置创建引擎实例
 
         Args:
             config: 引擎配置（mode 字段决定创建哪种引擎）
             event_bus: 事件总线
+            data_service: 数据服务实例（必需）
+            notification_config: 通知配置
 
         Returns:
             BaseEngine: 对应模式的引擎实例
@@ -545,13 +586,13 @@ class EngineManager:
 
         if mode == EngineMode.BACKTEST:
             from .backtest_engine import BacktestEngine
-            return BacktestEngine(config, event_bus)
+            return BacktestEngine(config, event_bus, data_service, notification_config)
         elif mode == EngineMode.LIVE:
             from .live_engine import LiveEngine
-            return LiveEngine(config, event_bus)
+            return LiveEngine(config, event_bus, data_service, notification_config)
         elif mode == EngineMode.ANALYZE:
             from .analyze_engine import AnalyzeEngine
-            return AnalyzeEngine(config, event_bus)
+            return AnalyzeEngine(config, event_bus, data_service, notification_config)
         else:
             raise ValueError(f"不支持的运行模式: {mode}")
 
@@ -608,7 +649,10 @@ _global_manager: Optional[EngineManager] = None
 
 
 def get_engine_manager(
-    config: EngineManagerConfig, event_bus: EventBus, data_service=None
+    config: EngineManagerConfig,
+    event_bus: EventBus,
+    data_service: IMarketDataService,
+    notification_config=None,
 ) -> EngineManager:
     """
     获取全局引擎管理器
@@ -616,7 +660,8 @@ def get_engine_manager(
     Args:
         config: 引擎管理器配置对象
         event_bus: 事件总线
-        data_service: 共享数据服务实例（可选）
+        data_service: 共享数据服务实例（必需）
+        notification_config: 通知配置（可选）
 
     Returns:
         EngineManager: 全局引擎管理器实例
@@ -626,5 +671,10 @@ def get_engine_manager(
     """
     global _global_manager
     if _global_manager is None:
-        _global_manager = EngineManager(config=config, event_bus=event_bus, data_service=data_service)
+        _global_manager = EngineManager(
+            config=config,
+            event_bus=event_bus,
+            data_service=data_service,
+            notification_config=notification_config,
+        )
     return _global_manager

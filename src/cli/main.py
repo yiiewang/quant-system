@@ -34,6 +34,9 @@ from pathlib import Path
 import click
 from dotenv import load_dotenv
 
+# ==================== 内部模块导入 ====================
+from src.core.models import EngineMode
+
 # 加载 .env 文件
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
@@ -110,15 +113,13 @@ def cli(ctx, verbose):
 @click.option("-s", "--strategy", required=True, help="策略名称，如 -s macd")
 @click.option("--strategy-config", required=True, help="策略配置路径，如 --strategy-config data/strategies/macd.yaml")
 @click.option("--sys-config", "sys_config_path", default=None, type=click.Path(), help="系统配置文件路径（默认 config/system.yaml）")
-@click.option("-m", "--mode", required=True, type=click.Choice(["analyze", "live", "backtest"]), help="运行模式: analyze(分析) / live(实时) / backtest(回测)")
+@click.option("-m", "--mode", required=True, type=click.Choice([e.value for e in EngineMode]), help="运行模式: analyze(分析) / live(实时) / backtest(回测)")
 @click.option("--symbol", default="000001.SZ", help="交易标的如 --symbol 000001.SZ")
 @click.option("--start", "start_date", default=None, help="开始日期 YYYY-MM-DD (回测必填)")
 @click.option("--end", "end_date", default=None, help="结束日期 YYYY-MM-DD (回测必填)")
 @click.option("--days", default=365, type=int, help="历史数据天数 (analyze)")
-@click.option("--source", default="baostock", type=click.Choice(["tushare", "akshare", "baostock"]), help="数据源")
 @click.option("--interval", default=60, type=int, help="检查间隔秒数 (live)")
 @click.option("--frequency", default="daily", type=click.Choice(["1min", "5min", "15min", "30min", "60min", "daily", "weekly", "monthly"]), help="数据频率")
-@click.option("--notify/--no-notify", default=True, help="是否启用通知 (live)")
 @click.option("-o", "--output", "output_dir", default="output", type=click.Path(), help="输出目录")
 @click.option("--initial-capital", default=1000000, type=float, help="初始资金 (backtest)")
 @click.option("--dry-run", is_flag=True, help="试运行，不执行实际操作")
@@ -134,10 +135,8 @@ def strategy_cmd(
     start_date,
     end_date,
     days,
-    source,
     interval,
     frequency,
-    notify,
     output_dir,
     initial_capital,
     dry_run,
@@ -164,7 +163,6 @@ def strategy_cmd(
         from src.config.schema import Config
         from src.runner.application import ApplicationRunner
         from src.utils.logging_config import setup_logging
-        from .execution_modes import create_mode
 
         # 加载系统配置以获取日志配置
         sys_config = load_config(Config, sys_config_path)
@@ -180,41 +178,53 @@ def strategy_cmd(
 
         logger.info(f"CLI 启动，模式: {mode}")
 
-        # 加载策略配置
-        config = load_config(Config, strategy_config)
-
         if dry_run:
             click.echo(f"\n[试运行] 模式={mode}, 策略={strategy}, 配置={strategy_config}, 标的={symbol}")
             return
 
-        # 创建 Runner 和 CommandMode
-        runner = ApplicationRunner(config=config)
-        cmd_mode = create_mode("command", runner=runner)
+        # 计算日期范围（根据 days 参数）
+        from src.utils.date_utils import calculate_date_range
+        start_date, end_date = calculate_date_range(
+            days=days,
+            start_date=start_date,
+            end_date=end_date
+        )
 
-        # 调用统一的 run 命令
-        result = cmd_mode.execute(
-            "run",
-            None,
-            mode=mode,
+        # 将字符串 mode 转换为 EngineMode 枚举
+        mode_map = {
+            "backtest": EngineMode.BACKTEST,
+            "analyze": EngineMode.ANALYZE,
+            "live": EngineMode.LIVE,
+        }
+        engine_mode = mode_map[mode]
+        
+        runner = ApplicationRunner(config=sys_config)
+        result = runner.run(
+            mode=engine_mode,
             symbols=[symbol],
             strategy=strategy,
             strategy_config=strategy_config,
             start_date=start_date,
             end_date=end_date,
-            days=days,
-            source=source,
             interval=interval,
             frequency=frequency,
             initial_capital=initial_capital,
-            notify=notify,
         )
 
         if not result.success:
             click.echo(f"执行失败: {result.error}", err=True)
-        elif result.message:
-            click.echo(f"{result.message}")
-        elif result.data:
-            _print_result(mode, result.data, output_dir)
+            sys.exit(1)
+        
+        # 获取 task_id，CLI 自己管理状态轮询
+        task_id = result.data["task_id"]
+        
+        if mode == "live":
+            # Live 模式：保持运行直到用户中断
+            _run_live_mode(runner, task_id, symbol)
+        else:
+            # Backtest/Analyze 模式：轮询等待完成
+            timeout = 600 if mode == "backtest" else 120
+            _wait_for_task(runner, task_id, mode, timeout, output_dir)
 
     except Exception as e:
         click.echo(f"执行失败: {e}", err=True)
@@ -222,6 +232,66 @@ def strategy_cmd(
             import traceback
             traceback.print_exc()
         sys.exit(1)
+
+
+def _wait_for_task(runner, task_id: str, mode: str, timeout: int, output_dir: str):
+    """轮询等待任务完成"""
+    from src.core.engine_manager import TaskStatus
+    import time
+    
+    poll_interval = 0.5
+    elapsed = 0
+    
+    click.echo(f"任务 {task_id} 已启动，等待完成...")
+    
+    while elapsed < timeout:
+        status_info = runner.engine_manager.status(task_id)
+        
+        if status_info is None:
+            click.echo(f"任务 {task_id} 不存在", err=True)
+            sys.exit(1)
+        
+        task_status = status_info.get("status")
+        
+        if task_status == TaskStatus.STOPPED.value:
+            result = runner.engine_manager.get_result(task_id)
+            _print_result(mode, result, output_dir)
+            return
+        
+        if task_status == TaskStatus.ERROR.value:
+            error = status_info.get("error", "未知错误")
+            click.echo(f"任务执行失败: {error}", err=True)
+            sys.exit(1)
+        
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+    
+    # 超时停止任务
+    runner.engine_manager.stop(task_id)
+    click.echo(f"任务超时 ({timeout}s)", err=True)
+    sys.exit(1)
+
+
+def _run_live_mode(runner, task_id: str, symbol: str):
+    """运行实时模式，保持直到用户中断"""
+    import time
+    
+    click.echo(f"\n✓ 实时任务已启动 (task_id={task_id})")
+    click.echo(f"  监控标的: {symbol}")
+    click.echo(f"\n按 Ctrl+C 停止...\n")
+    
+    try:
+        while True:
+            time.sleep(1)
+            status_info = runner.engine_manager.status(task_id)
+            if status_info and status_info.get("status") == "error":
+                error = status_info.get("error", "未知错误")
+                click.echo(f"任务异常: {error}", err=True)
+                sys.exit(1)
+    except KeyboardInterrupt:
+        click.echo("\n\n正在停止实时任务...")
+        runner.engine_manager.stop(task_id)
+        click.echo("实时任务已停止")
 
 
 def _print_result(mode: str, data, output_dir: str = None):
@@ -301,7 +371,6 @@ def data_sync(ctx, symbols, days, start_date, end_date, source, freq):
         from src.config.base import load_config
         from src.config.schema import Config
         from src.runner.application import ApplicationRunner
-        from .execution_modes import create_mode
 
         symbol_list = [s.strip() for s in symbols.split(",")]
         default_days = days if freq == "daily" else min(days, 5)
@@ -323,11 +392,7 @@ def data_sync(ctx, symbols, days, start_date, end_date, source, freq):
 
         config = load_config(Config)
         runner = ApplicationRunner(config=config)
-        cmd_mode = create_mode("command", runner=runner)
-
-        result = cmd_mode.execute(
-            "sync",
-            None,
+        result = runner.sync_data(
             symbols=symbol_list,
             frequency=freq,
             days=days,
@@ -368,13 +433,10 @@ def data_info(ctx, symbol):
         from src.config.base import load_config
         from src.config.schema import Config
         from src.runner.application import ApplicationRunner
-        from .execution_modes import create_mode
 
         config = load_config(Config)
         runner = ApplicationRunner(config=config)
-        cmd_mode = create_mode("command", runner=runner)
-
-        result = cmd_mode.execute("data", None, symbol=symbol)
+        result = runner.get_data_info(symbol=symbol)
 
         if result.success and result.data:
             if "daily" in result.data:
@@ -650,9 +712,9 @@ def client(ctx, server):
       python -m src.main client                        # 连接 localhost:8000
       python -m src.main client --server 10.0.0.1:9000 # 连接远程服务
     """
-    from .execution_modes import create_mode
+    from .client_mode import ClientMode
 
-    mode = create_mode("client", server=server)
+    mode = ClientMode(server=server)
     mode.start()
 
 
@@ -692,7 +754,7 @@ def interactive(ctx):
     from src.config.base import load_config
     from src.config.schema import Config
     from src.utils.logging_config import setup_logging
-    from .execution_modes import create_mode
+    from .interactive_mode import InteractiveMode
 
     sys_config = load_config(Config)
     setup_logging(
@@ -702,7 +764,7 @@ def interactive(ctx):
         backup_count=sys_config.log.backup_count,
     )
 
-    mode = create_mode("interactive")
+    mode = InteractiveMode()
     mode.start()
 
 

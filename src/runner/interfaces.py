@@ -10,7 +10,10 @@ except ImportError:
     from typing_extensions import Protocol, runtime_checkable
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.core.models import EngineMode
 
 
 @dataclass
@@ -60,33 +63,30 @@ class IRunner(Protocol):
     
     def run(
         self,
-        mode: str,
+        mode: "EngineMode",
         strategy: str,
         symbols: list,
-        strategy_config: str = None,
-        start_date: str = None,
-        end_date: str = None,
-        days: int = 365,
+        strategy_config: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         initial_capital: float = 1000000,
         interval: int = 60,
-        notify: bool = False,
-        **kwargs
+        frequency: str = "daily",
     ) -> CommandResult:
         """
         运行策略（统一入口）
-        
+
         Args:
-            mode: 运行模式 (analyze/backtest/live)
+            mode: 运行模式 (EngineMode.BACKTEST/ANALYZE/LIVE)
             strategy: 策略名称
             symbols: 标的列表
             strategy_config: 策略配置文件路径
-            start_date: 开始日期 (backtest 必须)
-            end_date: 结束日期 (backtest 必须)
-            days: 历史天数 (analyze)
+            start_date: 开始日期 (backtest/analyze 必须)
+            end_date: 结束日期 (backtest/analyze 必须)
             initial_capital: 初始资金 (backtest)
-            interval: 检查间隔秒数 (live)
-            notify: 是否启用通知 (live)
-            
+            interval: 轮询间隔秒数 (live)
+            frequency: 数据频率 (daily/1min/5min 等)
+
         Returns:
             CommandResult: 执行结果
         """
@@ -170,7 +170,7 @@ class IRunner(Protocol):
         """
         ...
     
-    def get_data_info(self, symbol: str = None) -> CommandResult:
+    def get_data_info(self, symbol: Optional[str] = None) -> CommandResult:
         """
         查看数据信息
         

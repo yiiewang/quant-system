@@ -8,11 +8,11 @@ import time as time_module
 import logging
 
 from .models import (
-    EngineConfig,
-    EngineMode,
     Portfolio,
     StrategyContext,
+    TaskConfig,
 )
+from src.data import IMarketDataService
 from .base_engine import BaseEngine
 from .event_bus import EventBus, EventType
 
@@ -33,8 +33,14 @@ class LiveEngine(BaseEngine):
         engine.start()
     """
 
-    def __init__(self, config: EngineConfig, event_bus: EventBus):
-        super().__init__(config, event_bus)
+    def __init__(
+        self,
+        config: TaskConfig,
+        event_bus: EventBus,
+        data_service: IMarketDataService,
+        notification_config=None,
+    ):
+        super().__init__(config, event_bus, data_service, notification_config)
         # 实时专用状态
         self._last_bar_time: Dict[str, Any] = {}
 
@@ -120,9 +126,7 @@ class LiveEngine(BaseEngine):
         notify_callback: Optional[Callable] = None,
     ) -> None:
         """处理单个标的"""
-        if self._data_service is None:
-            logger.error("数据服务未初始化")
-            return
+
         frequency = self.config.frequency
         is_minute = frequency != "daily"
 
@@ -130,7 +134,11 @@ class LiveEngine(BaseEngine):
         if hasattr(self._data_service, 'get_latest_with_realtime'):
             data = self._data_service.get_latest_with_realtime(symbol, frequency=frequency)
         else:
-            data = self._data_service.get_latest(symbol, frequency=frequency)
+            # 备选：使用get_history获取最近数据
+            from datetime import datetime, timedelta
+            end = datetime.now()
+            start = end - timedelta(days=60)
+            data = self._data_service.get_history(symbol, start_date=start, end_date=end, frequency=frequency)
 
         if data is None or data.empty:
             logger.info(f"  {symbol}: 无法获取数据")
@@ -140,7 +148,7 @@ class LiveEngine(BaseEngine):
         if is_minute and len(data) < 26:  # MACD需要至少26根
             logger.debug(f"  {symbol}: 分钟数据不足({len(data)}根)，尝试获取日线数据计算指标")
             daily_data = self._data_service.get_latest_with_realtime(symbol, frequency="daily")
-            if daily_data is not None and len(daily_data) >= 26:
+            if daily_data is not None and len(daily_data) >= 26 and self._strategy is not None:
                 # 用日线计算指标
                 daily_data = self._strategy.calculate_indicators(daily_data)
                 # 用最后一根日线的指标值作为当前分钟数据的指标

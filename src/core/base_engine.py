@@ -11,9 +11,10 @@ import logging
 
 import pandas as pd
 
+from src.data import IMarketDataService
+
 from .models import (
     EngineState,
-    EngineConfig,
     EngineMode,
     Signal,
     SignalType,
@@ -22,6 +23,7 @@ from .models import (
     OrderType,
     Portfolio,
     StrategyContext,
+    TaskConfig,
 )
 from .event_bus import EventBus, EventHandler, EventType, Event, get_event_bus
 
@@ -46,7 +48,13 @@ class BaseEngine(ABC):
     - 事件订阅管理
     """
 
-    def __init__(self, config: EngineConfig, event_bus: EventBus):
+    def __init__(
+        self,
+        config: TaskConfig,
+        event_bus: EventBus,
+        data_service: IMarketDataService,
+        notification_config=None,
+    ):
         self.config = config
         self.state = EngineState.IDLE
         self.event_bus = event_bus or get_event_bus()
@@ -56,7 +64,7 @@ class BaseEngine(ABC):
         self._strategy = None
         self._executor = None
         self._risk_manager = None
-        self._data_service = None
+        self._data_service = data_service  # 从EngineManager注入（必需）
         self._strategy_manager = None
 
         # 运行时状态
@@ -65,7 +73,8 @@ class BaseEngine(ABC):
         # 事件订阅管理
         self._event_handlers: List[EventHandler] = []
 
-        # 通知管理器（延迟初始化，避免循环导入）
+        # 通知配置和管理器（从EngineManager注入）
+        self._notification_config = notification_config
         self._notification_manager = None
 
         logger.info(
@@ -147,13 +156,9 @@ class BaseEngine(ABC):
         self._risk_manager = RiskManager(RiskConfig())
         logger.info("风控管理器已初始化")
 
-        # 4. 数据服务
-        self._init_data_service()
-
         # 5. 策略依赖注入
         from src.strategy.base import StrategyDeps
         deps = StrategyDeps(
-            data_service=self._data_service,
             risk_manager=self._risk_manager,
             executor=self._executor,
         )
@@ -170,36 +175,6 @@ class BaseEngine(ABC):
             slippage=self.config.slippage,
         )
         logger.info(f"执行器已初始化: {self.mode.value} 模式")
-
-    def _init_data_service(self) -> None:
-        """初始化数据服务（优先使用注入的服务）"""
-        # 如果配置中已注入数据服务，直接使用
-        if self.config.data_service is not None:
-            self._data_service = self.config.data_service
-            logger.info(f"使用注入的数据服务: {type(self._data_service).__name__}")
-            return
-
-        # 否则自行创建（兼容旧代码）
-        from src.data import get_data_service
-        from src.config.schema import DataConfig, DataSource
-
-        if self.config.data_source:
-            source_map = {
-                "tushare": DataSource.TUSHARE,
-                "akshare": DataSource.AKSHARE,
-                "baostock": DataSource.BAOSTOCK,
-                "yfinance": DataSource.YFINANCE,
-            }
-            source = source_map.get(self.config.data_source.lower())
-            if source:
-                data_config = DataConfig(source=source)
-                self._data_service = get_data_service(data_config)
-            else:
-                logger.warning(f"未知数据源: {self.config.data_source}，使用本地模式")
-                self._data_service = get_data_service()
-        else:
-            self._data_service = get_data_service()
-        logger.info(f"数据服务已初始化: {type(self._data_service).__name__}")
 
     def _process_signal(self, signal: Signal, is_backtest: bool = False) -> Optional[Order]:
         """
@@ -312,7 +287,12 @@ class BaseEngine(ABC):
 
     def setup_event_subscriptions(self, task_id: str) -> None:
         """设置事件订阅"""
-        if not self.config.notify:
+        # 检查通知是否启用（从注入的配置获取）
+        notify_enabled = (
+            self._notification_config is not None and 
+            getattr(self._notification_config, 'enabled', False)
+        )
+        if not notify_enabled:
             return
 
         def on_signal_generated(event: Event):
@@ -364,14 +344,8 @@ class BaseEngine(ABC):
 
         # 初始化通知管理器（如果未初始化且配置启用）
         if self._notification_manager is None:
-            # 尝试从全局配置获取通知配置
-            notification_config = getattr(self.config, 'notification_config', None)
-            if notification_config is None:
-                # 创建默认配置（根据 config.notify 字段）
-                notification_config = NotificationConfig(enabled=getattr(self.config, 'notify', False))
-
-            if notification_config.enabled:
-                self._notification_manager = NotificationManager(notification_config)
+            if self._notification_config is not None and getattr(self._notification_config, 'enabled', False):
+                self._notification_manager = NotificationManager(self._notification_config)
                 logger.info("通知管理器已初始化")
             else:
                 logger.debug("通知功能未启用")

@@ -8,11 +8,12 @@ import logging
 
 import pandas as pd
 
+from src.data import IMarketDataService
+
 from .models import (
-    EngineConfig,
-    EngineMode,
     Signal,
     SignalType,
+    TaskConfig,
 )
 from src.common import StrategyContext
 from .base_engine import BaseEngine
@@ -36,8 +37,14 @@ class BacktestEngine(BaseEngine):
         result = engine.start()
     """
 
-    def __init__(self, config: EngineConfig, event_bus: EventBus):
-        super().__init__(config, event_bus)
+    def __init__(
+        self,
+        config: TaskConfig,
+        event_bus: EventBus,
+        data_service: IMarketDataService,
+        notification_config=None,
+    ):
+        super().__init__(config, event_bus, data_service, notification_config)
         # 回测专用数据
         self._backtest_data: Dict[str, pd.DataFrame] = {}
         self._equity_curve: List[Dict] = []
@@ -126,20 +133,6 @@ class BacktestEngine(BaseEngine):
             slippage=self.config.slippage,
         )
         logger.info(f"执行器已初始化: {self.mode.value} 模式")
-
-    def _init_data_service(self) -> None:
-        """回测使用本地数据（优先使用注入的服务）"""
-        # 如果配置中已注入数据服务，直接使用
-        if self.config.data_service is not None:
-            self._data_service = self.config.data_service
-            logger.info(f"使用注入的数据服务: {type(self._data_service).__name__}")
-            return
-
-        # 否则自行创建（兼容旧代码）
-        from src.data import get_data_service
-
-        self._data_service = get_data_service()
-        logger.info(f"数据服务已初始化: {type(self._data_service).__name__}")
 
     def _load_backtest_data(self, start_date: datetime, end_date: datetime) -> None:
         """加载回测数据"""
