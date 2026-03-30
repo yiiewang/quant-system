@@ -18,7 +18,7 @@ Usage:
     
     # 使用
     config = Config.load("config.yaml")
-    service = init_data_service(config.data)
+    service = get_data_service(config.data)
 """
 from enum import Enum
 import os

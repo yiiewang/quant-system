@@ -11,7 +11,6 @@
 - Manager 内部使用 Registry 和 Loader
 - 外部只需与 Manager 交互，无需关心加载细节
 """
-from __future__ import annotations
 
 from typing import List, Optional, Dict, Any, Type, TYPE_CHECKING
 from pathlib import Path
@@ -47,7 +46,7 @@ class StrategyManager:
         manager.reload()
     """
     
-    def __init__(self, config: Optional[StrategyConfig]=None, auto_discover: bool = True):
+    def __init__(self, config: Optional['StrategyConfig']=None, auto_discover: bool = True):
         """
         初始化策略管理器
         
@@ -474,7 +473,7 @@ class {name.capitalize()}Strategy(BaseStrategy):
 _manager: Optional[StrategyManager] = None
 
 
-def get_strategy_manager(config: Optional[StrategyConfig] = None) -> StrategyManager:
+def get_strategy_manager(config: Optional['StrategyConfig'] = None) -> 'StrategyManager':
     """
     获取全局策略管理器
     

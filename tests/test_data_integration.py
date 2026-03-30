@@ -324,11 +324,10 @@ class TestEnhancedMarketDataService:
             service.clear_cache()
 
             # 获取最新数据
-            result = service.get_latest('000002.SZ', lookback=30)
+            result = service.get_latest('000002.SZ')
 
             # 验证数据
             assert not result.empty
-            assert len(result) <= 30
 
             service.close()
 

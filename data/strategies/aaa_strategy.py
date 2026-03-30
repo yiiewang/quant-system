@@ -4,7 +4,7 @@ AAA 策略
 请在此处添加策略说明
 """
 from dataclasses import dataclass, field
-from typing import Dict, Any
+from typing import Dict, Any, Optional, cast
 import pandas as pd
 
 from src.strategy.base import BaseStrategy
@@ -98,21 +98,24 @@ class AaaStrategy(BaseStrategy):
         slow_period = 26
         signal_period = 9
         
-        # 计算 EMA
-        ema_fast = result['close'].ewm(span=fast_period, adjust=False).mean()
-        ema_slow = result['close'].ewm(span=slow_period, adjust=False).mean()
+        # 计算 EMA（使用 cast 明确类型）
+        close_series = cast(pd.Series, result['close'])
+        ema_fast = close_series.ewm(span=fast_period, adjust=False).mean()
+        ema_slow = close_series.ewm(span=slow_period, adjust=False).mean()
         
         # MACD 线 = 快线 - 慢线
         result['macd'] = ema_fast - ema_slow
         
         # 信号线 = MACD 的 EMA
-        result['signal'] = result['macd'].ewm(span=signal_period, adjust=False).mean()
+        macd_series = cast(pd.Series, result['macd'])
+        result['signal'] = macd_series.ewm(span=signal_period, adjust=False).mean()
         
         # 柱状图 = MACD - 信号线
-        result['histogram'] = result['macd'] - result['signal']
+        signal_series = cast(pd.Series, result['signal'])
+        result['histogram'] = macd_series - signal_series  # type: ignore[operator]
         
-        self._strategy_logger.debug(f"MACD 指标计算完成: MACD={result['macd'].iloc[-1]:.4f}, "
-                                    f"Signal={result['signal'].iloc[-1]:.4f}")
+        self._strategy_logger.debug(f"MACD 指标计算完成: MACD={macd_series.iloc[-1]:.4f}, "
+                                    f"Signal={signal_series.iloc[-1]:.4f}")
         return result
     
     def evaluate(self, data: pd.DataFrame, context: StrategyContext) -> StrategyDecision:
@@ -127,28 +130,47 @@ class AaaStrategy(BaseStrategy):
         # 打印最新一条K线数据
         if not data.empty:
             latest = data.iloc[-1]
+            # 获取K线时间
+            if hasattr(data.index, 'name') and data.index.name:
+                time_str = str(data.index[-1])
+            elif 'datetime' in latest:
+                time_str = str(latest['datetime'])
+            elif 'date' in latest:
+                time_str = str(latest['date'])
+            else:
+                time_str = str(data.index[-1])
             open_val = f"{latest['open']:.2f}" if 'open' in latest else 'N/A'
             high_val = f"{latest['high']:.2f}" if 'high' in latest else 'N/A'
             low_val = f"{latest['low']:.2f}" if 'low' in latest else 'N/A'
             close_val = f"{latest['close']:.2f}" if 'close' in latest else 'N/A'
             volume_val = latest.get('volume', 'N/A')
             self._strategy_logger.info(
-                f"最新K线 [{context.symbol}]: "
+                f"最新K线 [{context.symbol}] {time_str}: "
                 f"open={open_val}, high={high_val}, low={low_val}, close={close_val}, volume={volume_val}"
             )
         
-        price = data['close'].iloc[-1] if not data.empty else 0.0
+        price = cast(pd.Series, data['close']).iloc[-1] if not data.empty else 0.0
         
-        # 需要至少 2 条数据判断交叉
+        # 检查MACD指标是否存在
+        if 'macd' not in data.columns or 'signal' not in data.columns:
+            return StrategyDecision.hold(context.symbol, "指标未计算")
+        
+        # 获取当前指标值（显式类型断言以满足类型检查器）
+        macd_series = cast(pd.Series, data['macd'])
+        signal_series = cast(pd.Series, data['signal'])
+        
+        macd_curr = macd_series.iloc[-1]
+        signal_curr = signal_series.iloc[-1]
+        histogram = cast(pd.Series, data['histogram']).iloc[-1] if 'histogram' in data.columns else 0.0
+        
+        # 需要至少 2 条数据判断交叉，否则用当前值作为前一值（观望状态）
         if len(data) < 2:
-            return StrategyDecision.hold(context.symbol, "数据不足")
-        
-        # 获取最近两天的指标
-        macd_curr = data['macd'].iloc[-1]
-        macd_prev = data['macd'].iloc[-2]
-        signal_curr = data['signal'].iloc[-1]
-        signal_prev = data['signal'].iloc[-2]
-        histogram = data['histogram'].iloc[-1]
+            macd_prev = macd_curr
+            signal_prev = signal_curr
+            self._strategy_logger.debug(f"{context.symbol}: 单根K线，使用当前值作为前一值，观望中")
+        else:
+            macd_prev = macd_series.iloc[-2]
+            signal_prev = signal_series.iloc[-2]
         
         # 金叉：MACD 从下方上穿信号线
         if macd_prev <= signal_prev and macd_curr > signal_curr:
@@ -186,7 +208,7 @@ class AaaStrategy(BaseStrategy):
             f"观望 (MACD={macd_curr:.4f}, Signal={signal_curr:.4f})"
         )
     
-    def should_notify(self, decision: StrategyDecision, last_decision: StrategyDecision = None) -> bool:
+    def should_notify(self, decision: StrategyDecision, last_decision: Optional[StrategyDecision] = None) -> bool:
         """
         决定是否发送通知
         
@@ -194,5 +216,5 @@ class AaaStrategy(BaseStrategy):
         """
 
         self._strategy_logger.info("发送通知")
-        return True 
-        # return decision.signal_type in (SignalType.BUY, SignalType.SELL)
+        # return True 
+        return decision.signal_type in (SignalType.BUY, SignalType.SELL)

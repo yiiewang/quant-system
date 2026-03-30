@@ -42,7 +42,7 @@ def demo_original_usage():
         start_date = end_date - timedelta(days=10)
         
         # 注意：这里实际运行会调用API，需要有有效的token
-        # data = service.get_latest('000001.SZ', lookback=5)
+        # data = service.get_latest('000001.SZ')
         # print(f"获取到 {len(data)} 条数据")
         
         service.close()
@@ -121,7 +121,7 @@ def demo_smooth_upgrade():
         start_date = end_date - timedelta(days=5)
         
         # 同样的调用接口
-        # data = service.get_latest('000001.SZ', lookback=10)
+        # data = service.get_latest('000001.SZ')
         
         service.close()
         print("平滑升级演示完成 ✓")

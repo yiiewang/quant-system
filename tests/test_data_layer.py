@@ -178,7 +178,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
         # get_latest 数据不足时不崩溃（LOCAL 跳过远端）
         try:
-            r = svc.get_latest("000001.SZ", lookback=10)
+            r = svc.get_latest("000001.SZ")
             check("get_latest LOCAL 不足时不崩溃", True, f"返回{len(r)}条")
         except Exception as e:
             check("get_latest LOCAL 不足时不崩溃", False, str(e))

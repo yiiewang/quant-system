@@ -1,27 +1,26 @@
 """
 远程客户端模式
 
-连接HTTP API服务执行命令
+连接HTTP API服务执行命令，通过 HTTP 调用远程 Runner。
 """
 import json
-import os
 from typing import List, TYPE_CHECKING
 
-from .execution_modes import ExecutionMode, CommandResult
+from .execution_modes import ExecutionMode
 
 if TYPE_CHECKING:
-    from src.runner.interfaces import ITradingRunner
+    from src.runner.interfaces import IRunner, CommandResult
 
 
 class ClientMode(ExecutionMode):
     """
     远程客户端模式
     
-    连接HTTP API服务执行命令
-    不依赖本地 Runner，直接调用远程 API
+    通过 HTTP API 调用远程 Runner，不依赖本地 Runner 实例。
+    重写 _dispatch 方法，将命令转换为 HTTP 请求。
     """
     
-    def __init__(self, server: str = "localhost:8000", runner: "ITradingRunner" = None):
+    def __init__(self, server: str = "localhost:8000", runner: "IRunner" = None):
         super().__init__(runner)  # ClientMode 通常不需要本地 runner
         self.server = server if server.startswith("http") else f"http://{server}"
         self.running = False
@@ -34,9 +33,61 @@ class ClientMode(ExecutionMode):
     def description(self) -> str:
         return "远程客户端模式(连接HTTP API)"
     
-    def _request(self, method: str, path: str, payload: dict = None, 
-                 timeout: int = 120) -> CommandResult:
+    def _dispatch(self, command: str, **kwargs) -> "CommandResult":
+        """
+        重写分发方法：通过 HTTP 调用远程 Runner
+        
+        将命令转换为对应的 API 端点请求。
+        """
+        from src.runner.interfaces import CommandResult
+        
+        # 策略运行
+        if command in ("run", "analyze", "backtest", "live"):
+            if command != "run":
+                kwargs["mode"] = command
+            return self._request("POST", "/api/strategy", kwargs)
+        
+        # 策略管理
+        if command == "strategies":
+            return self._request("GET", "/api/strategies")
+        
+        if command == "list-strategy-files":
+            return self._request("GET", "/api/strategy-files")
+        
+        if command == "create-strategy":
+            return self._request("POST", "/api/strategy/create", kwargs)
+        
+        if command == "delete-strategy":
+            return self._request("POST", "/api/strategy/delete", kwargs)
+        
+        if command == "reload-strategies":
+            return self._request("POST", "/api/strategy/reload")
+        
+        # 数据管理
+        if command == "sync":
+            return self._request("POST", "/api/data/sync", kwargs, timeout=300)
+        
+        if command == "data":
+            symbol = kwargs.get("symbol")
+            path = f"/api/data/info?symbol={symbol}" if symbol else "/api/data/info"
+            return self._request("GET", path)
+        
+        # 健康检查
+        if command == "health":
+            return self._request("GET", "/api/health")
+        
+        return CommandResult(success=False, error=f"未知命令: {command}")
+    
+    def _request(
+        self, 
+        method: str, 
+        path: str, 
+        payload: dict = None, 
+        timeout: int = 120
+    ) -> "CommandResult":
         """发送HTTP请求"""
+        from src.runner.interfaces import CommandResult
+        
         try:
             import requests
             url = f"{self.server}{path}"
@@ -52,188 +103,20 @@ class ClientMode(ExecutionMode):
                 error = data.get("detail", data.get("error", resp.text))
                 return CommandResult(success=False, error=error)
             
-            return CommandResult(success=True, data=data.get("data"), 
-                               message=data.get("message", ""))
+            return CommandResult(
+                success=True, 
+                data=data.get("data"), 
+                message=data.get("message", "")
+            )
             
         except Exception as e:
             return CommandResult(success=False, error=str(e))
     
-    def execute(self, command: str, args: List[str], **kwargs) -> CommandResult:
-        """执行远程命令"""
-        dispatch = {
-            "strategies": lambda: self._request("GET", "/api/strategies"),
-            "analyze": lambda: self._parse_and_analyze(args),
-            "backtest": lambda: self._parse_and_backtest(args),
-            "live": lambda: self._parse_and_live(args),
-            "sync": lambda: self._parse_and_sync(args),
-            "data": lambda: self._parse_and_data(args),
-            "health": lambda: self._request("GET", "/api/health"),
-        }
-        
-        handler = dispatch.get(command)
-        if not handler:
-            return CommandResult(success=False, error=f"未知命令: {command}")
-        
-        return handler()
-    
-    def _parse_and_analyze(self, args: List[str]) -> CommandResult:
-        """解析参数并执行analyze"""
-        symbols = []
-        strategy = None
-        days = 365
-        source = "baostock"
-        
-        i = 0
-        while i < len(args):
-            if args[i] == "--strategy" and i + 1 < len(args):
-                strategy = args[i + 1]
-                i += 2
-            elif args[i] == "--days" and i + 1 < len(args):
-                days = int(args[i + 1])
-                i += 2
-            elif args[i] == "--source" and i + 1 < len(args):
-                source = args[i + 1]
-                i += 2
-            elif not args[i].startswith("--"):
-                symbols.append(args[i])
-                i += 1
-            else:
-                i += 1
-        
-        payload = {
-            "symbols": symbols,
-            "days": days,
-            "source": source,
-        }
-        if strategy:
-            payload["strategy"] = strategy
-        
-        return self._request("POST", "/api/analyze", payload)
-    
-    def _parse_and_backtest(self, args: List[str]) -> CommandResult:
-        """解析参数并执行backtest"""
-        symbols = []
-        start_date = None
-        end_date = None
-        strategy = None
-        capital = 1000000
-        
-        i = 0
-        while i < len(args):
-            if args[i] == "--start" and i + 1 < len(args):
-                start_date = args[i + 1]
-                i += 2
-            elif args[i] == "--end" and i + 1 < len(args):
-                end_date = args[i + 1]
-                i += 2
-            elif args[i] == "--strategy" and i + 1 < len(args):
-                strategy = args[i + 1]
-                i += 2
-            elif args[i] == "--capital" and i + 1 < len(args):
-                capital = float(args[i + 1])
-                i += 2
-            elif not args[i].startswith("--"):
-                symbols.append(args[i])
-                i += 1
-            else:
-                i += 1
-        
-        if not start_date or not end_date:
-            return CommandResult(success=False, error="缺少 --start 或 --end 参数")
-        
-        payload = {
-            "symbols": symbols,
-            "start_date": start_date,
-            "end_date": end_date,
-            "initial_capital": capital,
-        }
-        if strategy:
-            payload["strategy"] = strategy
-        
-        return self._request("POST", "/api/backtest", payload, timeout=300)
-    
-    def _parse_and_live(self, args: List[str]) -> CommandResult:
-        """解析参数并执行live"""
-        if not args:
-            return CommandResult(success=False, error="缺少子命令")
-
-        action = args[0]
-        rest = args[1:]
-
-        symbols = []
-        strategy = None
-        interval = 60
-
-        i = 0
-        while i < len(rest):
-            if rest[i] == "--strategy" and i + 1 < len(rest):
-                strategy = rest[i + 1]
-                i += 2
-            elif rest[i] == "--interval" and i + 1 < len(rest):
-                interval = int(rest[i + 1])
-                i += 2
-            elif not rest[i].startswith("--"):
-                symbols.append(rest[i])
-                i += 1
-            else:
-                i += 1
-
-        if action == "start":
-            payload = {"symbols": symbols, "interval": interval}
-            if strategy:
-                payload["strategy"] = strategy
-            return self._request("POST", "/api/live/start", payload)
-
-        elif action == "stop":
-            return self._request("POST", "/api/live/stop")
-
-        elif action == "status":
-            return self._request("GET", "/api/live/status")
-
-        else:
-            return CommandResult(success=False, error=f"未知操作: {action}")
-    
-    def _parse_and_sync(self, args: List[str]) -> CommandResult:
-        """解析参数并执行sync"""
-        symbols = []
-        frequency = "daily"
-        days = 365
-        
-        i = 0
-        while i < len(args):
-            if args[i] == "--freq" and i + 1 < len(args):
-                frequency = args[i + 1]
-                i += 2
-            elif args[i] == "--days" and i + 1 < len(args):
-                days = int(args[i + 1])
-                i += 2
-            elif not args[i].startswith("--"):
-                symbols.append(args[i])
-                i += 1
-            else:
-                i += 1
-        
-        payload = {
-            "symbols": symbols,
-            "frequency": frequency,
-            "days": days,
-        }
-        return self._request("POST", "/api/data/sync", payload, timeout=300)
-    
-    def _parse_and_data(self, args: List[str]) -> CommandResult:
-        """解析参数并执行data"""
-        symbol = None
-        if args and not args[0].startswith("--"):
-            symbol = args[0]
-        
-        path = "/api/data/info"
-        if symbol:
-            path += f"?symbol={symbol}"
-        return self._request("GET", path)
-    
     def start(self):
         """启动客户端REPL"""
         from .main import Colors
+        from src.runner.interfaces import CommandResult
+        
         self.running = True
         
         print(f"{Colors.HEADER}{'='*60}{Colors.ENDC}")
@@ -249,11 +132,11 @@ class ClientMode(ExecutionMode):
             print(f"{Colors.OKGREEN}[连接成功]{Colors.ENDC} 服务运行正常\n")
         else:
             print(f"{Colors.FAIL}[连接失败]{Colors.ENDC} {result.error}")
-            print(f"提示: 先启动服务 python -m src.cli.main serve\n")
+            print(f"提示: 先启动服务 python -m src.main serve\n")
         
         while self.running:
             try:
-                cmd_input = input(f"{Colors.OKGREEN}macd> {Colors.ENDC}").strip()
+                cmd_input = input(f"{Colors.OKGREEN}quant> {Colors.ENDC}").strip()
                 
                 if not cmd_input:
                     continue
@@ -272,10 +155,11 @@ class ClientMode(ExecutionMode):
                     continue
                 
                 if command == 'clear':
+                    import os
                     os.system('clear' if os.name == 'posix' else 'cls')
                     continue
                 
-                # 执行命令
+                # 执行命令（通过基类的统一分发，最终调用 _dispatch）
                 result = self.execute(command, args)
                 self._print_result(result)
                 
@@ -293,14 +177,14 @@ class ClientMode(ExecutionMode):
         print("  strategies          列出可用策略")
         print("  analyze <symbols>   分析标的")
         print("  backtest <symbols>  运行回测")
-        print("  live <action>       实时运行管理")
+        print("  live <symbols>      实时运行")
         print("  sync <symbols>      同步数据")
         print("  data [symbol]       查看数据信息")
         print("  help                显示帮助")
         print("  clear               清屏")
         print("  exit                退出\n")
     
-    def _print_result(self, result: CommandResult):
+    def _print_result(self, result: "CommandResult"):
         """格式化打印结果"""
         from .main import Colors
         
@@ -314,3 +198,6 @@ class ClientMode(ExecutionMode):
         if result.data:
             print(json.dumps(result.data, ensure_ascii=False, indent=2))
         print()
+
+
+__all__ = ["ClientMode"]

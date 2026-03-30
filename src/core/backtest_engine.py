@@ -2,7 +2,7 @@
 回测引擎 - 历史数据重放，模拟交易计算收益
 """
 
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, cast
 from datetime import datetime
 import logging
 
@@ -136,10 +136,9 @@ class BacktestEngine(BaseEngine):
             return
 
         # 否则自行创建（兼容旧代码）
-        from src.data import MarketDataService
-        from src.config.schema import DataSource
+        from src.data import get_data_service
 
-        self._data_service = MarketDataService(source=DataSource.LOCAL)
+        self._data_service = get_data_service()
         logger.info(f"数据服务已初始化: {type(self._data_service).__name__}")
 
     def _load_backtest_data(self, start_date: datetime, end_date: datetime) -> None:
@@ -188,8 +187,11 @@ class BacktestEngine(BaseEngine):
         if data is None or data.empty:
             return
 
-        mask = data["date"] <= current_date
-        available_data = data[mask].copy()
+        # 类型收窄：此时 data 必定是 DataFrame
+        assert data is not None
+        # date 是索引，直接比较
+        mask = data.index <= current_date
+        available_data = data.loc[mask].copy()
 
         if len(available_data) < self._strategy.min_bars:
             return
@@ -314,8 +316,8 @@ class BacktestEngine(BaseEngine):
         """获取所有交易日期"""
         all_dates = set()
         for data in self._backtest_data.values():
-            dates = data["date"].tolist()
-            all_dates.update(dates)
+            # date 是索引，直接获取
+            all_dates.update(data.index.tolist())
         return sorted(list(all_dates))
 
     def _calculate_backtest_result(self) -> BacktestResult:

@@ -124,11 +124,31 @@ class LiveEngine(BaseEngine):
             logger.error("数据服务未初始化")
             return
         frequency = self.config.frequency
-        data = self._data_service.get_latest(symbol, lookback=100, frequency=frequency)
+        is_minute = frequency != "daily"
+
+        # 使用实时行情更新的数据（新浪财经API）
+        if hasattr(self._data_service, 'get_latest_with_realtime'):
+            data = self._data_service.get_latest_with_realtime(symbol, frequency=frequency)
+        else:
+            data = self._data_service.get_latest(symbol, frequency=frequency)
 
         if data is None or data.empty:
             logger.info(f"  {symbol}: 无法获取数据")
             return
+
+        # 分钟模式且数据不足时：用日线数据计算指标，用分钟数据更新价格
+        if is_minute and len(data) < 26:  # MACD需要至少26根
+            logger.debug(f"  {symbol}: 分钟数据不足({len(data)}根)，尝试获取日线数据计算指标")
+            daily_data = self._data_service.get_latest_with_realtime(symbol, frequency="daily")
+            if daily_data is not None and len(daily_data) >= 26:
+                # 用日线计算指标
+                daily_data = self._strategy.calculate_indicators(daily_data)
+                # 用最后一根日线的指标值作为当前分钟数据的指标
+                last_daily = daily_data.iloc[-1]
+                for col in ['macd', 'signal', 'histogram']:
+                    if col in daily_data.columns:
+                        data[col] = last_daily[col]
+                logger.debug(f"  {symbol}: 已用日线指标填充分钟数据")
 
         # 检查是否有新 K 线
         last_bar = data.iloc[-1]

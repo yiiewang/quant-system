@@ -1,9 +1,13 @@
 # MACD 量化交易系统依赖
-# 兼容 Python 3.7+
+# 兼容 Python 3.6+
+
+# Python 3.6 兼容性依赖
+typing_extensions>=3.7.4;python_version<"3.8"
+dataclasses>=0.8;python_version<"3.7"
 
 # 核心依赖
-pandas>=1.5.0
-numpy>=1.20.0
+pandas>=1.1.0
+numpy>=1.19.0
 
 # 数据源
 tushare>=1.2.60

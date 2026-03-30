@@ -1,27 +1,33 @@
 """
 HTTP API 服务端模式
 
-启动HTTP服务器，提供RESTful API
+启动HTTP服务器，将 HTTP 请求转换为 IRunner 方法调用。
 """
 import sys
 from typing import List, TYPE_CHECKING
 
-from .execution_modes import ExecutionMode, CommandResult
+from .execution_modes import ExecutionMode
 
 if TYPE_CHECKING:
-    from src.runner.interfaces import ITradingRunner
+    from src.runner.interfaces import IRunner, CommandResult
 
 
 class ServerMode(ExecutionMode):
     """
     HTTP API 服务端模式
     
-    启动HTTP服务器，通过 API 暴露 ITradingRunner 的业务接口
+    启动 FastAPI 服务器，将 HTTP 请求转换为 IRunner 方法调用。
+    不支持直接 execute()，所有操作通过 HTTP API。
     """
     
-    def __init__(self, host: str = "0.0.0.0", port: int = 8000,
-                 workers: int = 1, auto_reload: bool = False,
-                 runner: "ITradingRunner" = None):
+    def __init__(
+        self, 
+        host: str = "0.0.0.0", 
+        port: int = 8000,
+        workers: int = 1, 
+        auto_reload: bool = False,
+        runner: "IRunner" = None
+    ):
         super().__init__(runner)
         self.host = host
         self.port = port
@@ -36,9 +42,13 @@ class ServerMode(ExecutionMode):
     def description(self) -> str:
         return "HTTP API服务端模式"
     
-    def execute(self, command: str, args: List[str], **kwargs) -> CommandResult:
+    def execute(self, command: str, args: List[str], **kwargs) -> "CommandResult":
         """服务端不支持直接执行命令"""
-        return CommandResult(success=False, error="服务端模式不支持直接执行命令，请通过HTTP API调用")
+        from src.runner.interfaces import CommandResult
+        return CommandResult(
+            success=False, 
+            error="服务端模式不支持直接执行命令，请通过HTTP API调用"
+        )
     
     def start(self):
         """启动HTTP服务"""
@@ -68,3 +78,6 @@ class ServerMode(ExecutionMode):
             print(f"{Colors.FAIL}错误: 需要安装 uvicorn{Colors.ENDC}")
             print("  pip install uvicorn")
             sys.exit(1)
+
+
+__all__ = ["ServerMode"]

@@ -60,6 +60,29 @@ class EmailConfig:
     password: str = ""
     use_ssl: bool = True
 
+    def __post_init__(self):
+        """从环境变量读取 SMTP 配置（如果未设置）"""
+        import os
+
+        if not self.smtp_server or self.smtp_server == "smtp.qq.com":
+            self.smtp_server = os.environ.get("SMTP_SERVER", self.smtp_server)
+
+        if self.smtp_port == 465:
+            port_str = os.environ.get("SMTP_PORT")
+            if port_str:
+                self.smtp_port = int(port_str)
+
+        if not self.username:
+            self.username = os.environ.get("SMTP_USER", self.username)
+
+        if not self.password:
+            self.password = os.environ.get("SMTP_PASS", self.password)
+
+        if self.use_ssl:  # 默认为 True，只有显式设置为 false 才关闭
+            ssl_str = os.environ.get("SMTP_SSL", "").lower()
+            if ssl_str in ("false", "0", "no"):
+                self.use_ssl = False
+
 
 @dataclass
 class WebhookConfig:
@@ -75,6 +98,15 @@ class NotificationConfig:
     enabled: bool = False
     email: EmailConfig = field(default_factory=EmailConfig)
     webhook: WebhookConfig = field(default_factory=WebhookConfig)
+
+    def __post_init__(self):
+        """自动启用通知（如果配置了有效的通知渠道）"""
+        # 如果 email 配置完整（有用户名和密码），自动启用
+        if self.email.username and self.email.password:
+            self.enabled = True
+        # 如果 webhook 配置了 URL，自动启用
+        elif self.webhook.url:
+            self.enabled = True
 
 
 @dataclass

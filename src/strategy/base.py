@@ -14,7 +14,7 @@ from src.core.models import Signal, SignalType, Position, Portfolio, StrategyDec
 from src.common import StrategyContext
 
 if TYPE_CHECKING:
-    from src.data.market import MarketDataService
+    from src.data import IMarketDataService
     from src.risk.manager import RiskManager
     from src.broker.simulator import SimulatedExecutor
 
@@ -34,7 +34,7 @@ class StrategyDeps:
         risk_manager: 风控管理器，可用于查询仓位限制等
         executor:     执行器，可用于查询初始资金等
     """
-    data_service: Optional['MarketDataService'] = None
+    data_service: Optional['IMarketDataService'] = None
     risk_manager: Optional['RiskManager'] = None
     executor: Optional['SimulatedExecutor'] = None
 

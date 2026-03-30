@@ -5,7 +5,7 @@
 """
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, cast
 import logging
 
 import pandas as pd
@@ -246,9 +246,10 @@ class BaostockProvider(BaseDataProvider):
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
         if frequency == Frequency.DAILY:
-            df['date'] = pd.to_datetime(df['date'])
+            df['date'] = pd.to_datetime(cast(pd.Series, df['date']))
         else:
-            df['date'] = pd.to_datetime(df['time'].str[:14], format='%Y%m%d%H%M%S')
+            time_series = cast(pd.Series, df['time'])
+            df['date'] = pd.to_datetime(time_series.str[:14], format='%Y%m%d%H%M%S')
 
         return pd.DataFrame(df[['symbol', 'date', 'open', 'high', 'low', 'close', 'volume', 'amount']])
     
@@ -331,3 +332,108 @@ class YFinanceProvider(BaseDataProvider):
             'low': info.get('dayLow') or info.get('regularMarketDayLow', 0),
             'volume': info.get('regularMarketVolume', 0),
         }
+
+
+class SinaProvider(BaseDataProvider):
+    """新浪财经数据提供者 - 实时行情专用
+    
+    特点：
+    - 免费API，无需授权
+    - A股实时行情（3秒延迟）
+    - 支持批量查询（一次最多查询多个标的）
+    """
+    
+    def fetch(self, symbol: str, start_date: datetime,
+              end_date: datetime,
+              frequency: str = Frequency.DAILY) -> pd.DataFrame:
+        """新浪财经不提供历史数据API，返回空DataFrame"""
+        logger.warning("新浪财经不提供历史数据，请使用其他Provider")
+        return pd.DataFrame()
+    
+    def fetch_realtime(self, symbol: str) -> Dict[str, Any]:
+        """
+        获取实时行情（新浪财经API）
+        
+        Args:
+            symbol: 标的代码，如 '002050.SZ'
+            
+        Returns:
+            Dict: 实时行情数据
+        """
+        # 复用批量查询方法
+        results = self.fetch_realtime_batch([symbol])
+        return results.get(symbol, {})
+    
+    def fetch_realtime_batch(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        批量获取实时行情（新浪支持一次查询多个）
+        
+        Args:
+            symbols: 标的列表，如 ['002050.SZ', '000001.SZ']
+            
+        Returns:
+            Dict: {symbol: quote_data}
+        """
+        import requests
+        
+        if not symbols:
+            return {}
+        
+        # 批量转换代码
+        sina_symbols = [self._to_sina_symbol(s) for s in symbols]
+        symbol_map = dict(zip(sina_symbols, symbols))  # 反向映射
+        
+        try:
+            url = f"https://hq.sinajs.cn/list={','.join(sina_symbols)}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://finance.sina.com.cn'
+            }
+            response = requests.get(url, headers=headers, timeout=10)
+            response.encoding = 'gbk'
+            
+            results = {}
+            # 解析多个 var hq_str_xxx="..." 语句
+            import re
+            pattern = r'var hq_str_(\w+)="([^"]*)"'
+            matches = re.findall(pattern, response.text)
+            
+            for sina_code, data_str in matches:
+                if not data_str:
+                    continue
+                fields = data_str.split(',')
+                if len(fields) < 33:
+                    continue
+                
+                original_symbol = symbol_map.get(sina_code, sina_code)
+                results[original_symbol] = {
+                    'symbol': original_symbol,
+                    'name': fields[0],
+                    'open': float(fields[1]),
+                    'close': float(fields[2]),
+                    'price': float(fields[3]),
+                    'high': float(fields[4]),
+                    'low': float(fields[5]),
+                    'volume': int(fields[8]),
+                    'amount': float(fields[9]),
+                    'date': fields[30],
+                    'time': fields[31],
+                    'source': 'sina',
+                }
+            
+            return results
+        except Exception as e:
+            logger.warning(f"新浪批量行情失败: {e}")
+            return {}
+    
+    def _to_sina_symbol(self, symbol: str) -> str:
+        """转换为新浪代码格式"""
+        if '.' in symbol:
+            code, exchange = symbol.split('.')
+            if exchange.upper() == 'SH':
+                return f"sh{code}"
+            elif exchange.upper() == 'SZ':
+                return f"sz{code}"
+            elif exchange.upper() == 'BJ':
+                return f"bj{code}"
+        return symbol

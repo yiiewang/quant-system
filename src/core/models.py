@@ -67,6 +67,7 @@ class EngineConfig:
     start_date: Optional[str] = None  # 回测开始日期
     end_date: Optional[str] = None  # 回测结束日期
     notify: bool = False  # 是否启用通知
+    notification_config: Any = None  # 通知配置对象 (NotificationConfig)
     days: int = 60  # 分析模式历史天数
     data_service: Any = None  # 注入的数据服务实例（Runner统一初始化）
 # ==================== 信号相关 ====================

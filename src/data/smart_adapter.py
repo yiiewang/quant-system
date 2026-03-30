@@ -420,7 +420,7 @@ class SmartDataAdapter:
         """获取健康报告"""
         return self.health_monitor.get_health_report()
     
-    def get_latest(self, symbol: str, lookback: int = 100,
+    def get_latest(self, symbol: str,
                    frequency: str = Frequency.DAILY) -> 'pd.DataFrame':
         """
         获取最新数据（兼容 MarketDataService 接口）
@@ -429,7 +429,6 @@ class SmartDataAdapter:
 
         Args:
             symbol: 股票代码
-            lookback: 回溯条数
             frequency: 数据频率
 
         Returns:
@@ -437,23 +436,16 @@ class SmartDataAdapter:
         """
         from datetime import timedelta
 
-        # 计算时间范围
+        # 计算时间范围（默认最近一年）
         end_date = datetime.now()
         if frequency in [Frequency.MIN_1, Frequency.MIN_5, Frequency.MIN_15,
                          Frequency.MIN_30, Frequency.MIN_60]:
             start_date = end_date - timedelta(days=7)
-        elif frequency == Frequency.WEEKLY:
-            start_date = end_date - timedelta(days=lookback * 7 * 2)
-        elif frequency == Frequency.MONTHLY:
-            start_date = end_date - timedelta(days=lookback * 30 * 2)
         else:
-            start_date = end_date - timedelta(days=max(lookback * 2, 365))
+            start_date = end_date - timedelta(days=365)
 
         # 调用 fetch 方法获取数据
         data = self.fetch(symbol, start_date, end_date, frequency)
 
-        if data is not None and not data.empty:
-            return data.tail(lookback)
-
-        return pd.DataFrame()
+        return data if data is not None else pd.DataFrame()
 

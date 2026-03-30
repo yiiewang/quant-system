@@ -65,6 +65,9 @@ class BaseEngine(ABC):
         # 事件订阅管理
         self._event_handlers: List[EventHandler] = []
 
+        # 通知管理器（延迟初始化，避免循环导入）
+        self._notification_manager = None
+
         logger.info(
             f"初始化引擎 [{self.mode.value}]: {config.symbols}, strategy={config.strategy_name}"
         )
@@ -177,9 +180,8 @@ class BaseEngine(ABC):
             return
 
         # 否则自行创建（兼容旧代码）
-        from src.data import MarketDataService
-        from src.config.schema import DataSource
-        from src.data.smart_adapter import SmartDataAdapter
+        from src.data import get_data_service
+        from src.config.schema import DataConfig, DataSource
 
         if self.config.data_source:
             source_map = {
@@ -190,12 +192,13 @@ class BaseEngine(ABC):
             }
             source = source_map.get(self.config.data_source.lower())
             if source:
-                self._data_service = MarketDataService(source=source)
+                data_config = DataConfig(source=source)
+                self._data_service = get_data_service(data_config)
             else:
-                logger.warning(f"未知数据源: {self.config.data_source}，使用智能适配器")
-                self._data_service = SmartDataAdapter()
+                logger.warning(f"未知数据源: {self.config.data_source}，使用本地模式")
+                self._data_service = get_data_service()
         else:
-            self._data_service = SmartDataAdapter()
+            self._data_service = get_data_service()
         logger.info(f"数据服务已初始化: {type(self._data_service).__name__}")
 
     def _process_signal(self, signal: Signal, is_backtest: bool = False) -> Optional[Order]:
@@ -316,10 +319,9 @@ class BaseEngine(ABC):
             try:
                 signal_data = event.data.get("signal", {})
                 logger.info(f"任务 {task_id} 生成信号: {signal_data}")
-                self.event_bus.publish(
-                    EventType.SIGNAL_GENERATED,
-                    {"task_id": task_id, "signal": signal_data},
-                )
+                # 直接发送通知，不要再次发布 SIGNAL_GENERATED 事件（避免无限递归）
+                # 通知逻辑在这里执行，如发送邮件/微信/钉钉等
+                self._send_notification("signal", task_id, signal_data)
             except Exception as e:
                 logger.error(f"任务 {task_id} 处理信号事件失败: {e}")
 
@@ -327,10 +329,8 @@ class BaseEngine(ABC):
             try:
                 order_data = event.data.get("order", {})
                 logger.info(f"任务 {task_id} 订单成交: {order_data}")
-                self.event_bus.publish(
-                    EventType.ORDER_FILLED,
-                    {"task_id": task_id, "order": order_data},
-                )
+                # 直接发送通知，不要再次发布 ORDER_FILLED 事件（避免无限递归）
+                self._send_notification("order", task_id, order_data)
             except Exception as e:
                 logger.error(f"任务 {task_id} 处理订单事件失败: {e}")
 
@@ -348,3 +348,72 @@ class BaseEngine(ABC):
             self.event_bus.unsubscribe(EventType.ORDER_FILLED, handler)
         self._event_handlers.clear()
         logger.info("已取消事件订阅")
+
+    def _send_notification(self, notify_type: str, task_id: str, data: Dict[str, Any]) -> None:
+        """
+        发送通知（信号/订单等）
+
+        Args:
+            notify_type: 通知类型（signal/order）
+            task_id: 任务ID
+            data: 通知数据
+        """
+        # 延迟导入避免循环依赖
+        from src.notification import NotificationManager
+        from src.config.schema import NotificationConfig
+
+        # 初始化通知管理器（如果未初始化且配置启用）
+        if self._notification_manager is None:
+            # 尝试从全局配置获取通知配置
+            notification_config = getattr(self.config, 'notification_config', None)
+            if notification_config is None:
+                # 创建默认配置（根据 config.notify 字段）
+                notification_config = NotificationConfig(enabled=getattr(self.config, 'notify', False))
+
+            if notification_config.enabled:
+                self._notification_manager = NotificationManager(notification_config)
+                logger.info("通知管理器已初始化")
+            else:
+                logger.debug("通知功能未启用")
+                return
+
+        # 发送通知
+        try:
+            if notify_type == "signal":
+                symbol = data.get("symbol", "")
+                signal_type = data.get("signal_type", "HOLD")
+                price = data.get("price", 0.0)
+                reason = data.get("reason", "")
+
+                success = self._notification_manager.send_signal(
+                    symbol=symbol,
+                    signal_type=signal_type,
+                    price=price,
+                    reason=reason,
+                    additional_info=data.get("indicators")
+                )
+                if success:
+                    logger.info(f"✓ 信号通知已发送: {symbol} {signal_type} @ {price:.2f}")
+                else:
+                    logger.warning(f"✗ 信号通知发送失败: {symbol} {signal_type}")
+
+            elif notify_type == "order":
+                symbol = data.get("symbol", "")
+                side = data.get("side", "")
+                price = data.get("price", 0.0)
+                quantity = data.get("quantity", 0)
+
+                success = self._notification_manager.send_alert(
+                    title=f"订单成交: {symbol}",
+                    message=f"{side} {quantity}股 @ ¥{price:.2f}"
+                )
+                if success:
+                    logger.info(f"✓ 订单通知已发送: {symbol} {side} {quantity}股")
+                else:
+                    logger.warning(f"✗ 订单通知发送失败: {symbol}")
+
+            else:
+                logger.warning(f"未知的通知类型: {notify_type}")
+
+        except Exception as e:
+            logger.error(f"发送通知失败: {e}", exc_info=True)
