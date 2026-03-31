@@ -672,13 +672,15 @@ def serve(ctx, host, port, auto_reload, workers, log_level):
         click.echo("  pip install fastapi uvicorn[standard]", err=True)
         sys.exit(1)
 
+    # 使用 Runner 创建 FastAPI 应用
     uvicorn.run(
-        "src.api.server:app",
+        "src.runner:create_app",
         host=host,
         port=port,
         reload=auto_reload,
         workers=workers if not auto_reload else 1,
         log_level=log_level,
+        factory=True,
     )
 
 

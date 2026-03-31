@@ -338,5 +338,120 @@ class {name.capitalize()}Strategy(BaseStrategy):
         except Exception as e:
             return CommandResult(success=False, error=str(e))
 
+    # ──────────────────────────────────────────────────────────────────
+    # HTTP API 支持
+    # ──────────────────────────────────────────────────────────────────
+
+    def create_app(self):
+        """
+        创建 FastAPI 应用
+        
+        Returns:
+            FastAPI 应用实例
+        """
+        from fastapi import FastAPI, HTTPException
+        from fastapi.middleware.cors import CORSMiddleware
+        from pydantic import BaseModel
+        from typing import Optional, List
+        
+        # 请求模型
+        class StrategyRequest(BaseModel):
+            mode: str
+            strategy: str
+            symbols: List[str]
+            strategy_config: Optional[str] = None
+            start_date: Optional[str] = None
+            end_date: Optional[str] = None
+            days: int = 365
+            initial_capital: float = 1000000
+            interval: int = 60
+            notify: bool = False
+
+        class SyncDataRequest(BaseModel):
+            symbols: List[str]
+            frequency: str = "daily"
+            days: int = 365
+
+        class CreateStrategyRequest(BaseModel):
+            name: str
+
+        class DeleteStrategyRequest(BaseModel):
+            name: str
+
+        # 创建应用
+        app = FastAPI(
+            title="量化交易系统 API",
+            description="基于 IRunner 接口的 HTTP API",
+            version="1.0.0",
+        )
+
+        # CORS
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+        def result_to_response(result: "CommandResult"):
+            if not result.success:
+                raise HTTPException(status_code=400, detail=result.error)
+            return result.to_dict()
+
+        # 端点
+        @app.get("/api/health")
+        async def health():
+            return {"status": "healthy"}
+
+        @app.get("/api/strategies")
+        async def list_strategies():
+            return result_to_response(self.list_strategies())
+
+        @app.post("/api/strategy")
+        async def run_strategy(request: StrategyRequest):
+            return result_to_response(self.run(
+                mode=request.mode,
+                strategy=request.strategy,
+                symbols=request.symbols,
+                strategy_config=request.strategy_config,
+                start_date=request.start_date,
+                end_date=request.end_date,
+                days=request.days,
+                initial_capital=request.initial_capital,
+                interval=request.interval,
+                notify=request.notify,
+            ))
+
+        @app.get("/api/strategy-files")
+        async def list_strategy_files():
+            return result_to_response(self.list_strategy_files())
+
+        @app.post("/api/strategy/create")
+        async def create_strategy(request: CreateStrategyRequest):
+            return result_to_response(self.create_strategy(request.name))
+
+        @app.post("/api/strategy/delete")
+        async def delete_strategy(request: DeleteStrategyRequest):
+            return result_to_response(self.delete_strategy(request.name))
+
+        @app.post("/api/strategy/reload")
+        async def reload_strategies():
+            return result_to_response(self.reload_strategies())
+
+        @app.post("/api/data/sync")
+        async def sync_data(request: SyncDataRequest):
+            return result_to_response(self.sync_data(
+                symbols=request.symbols,
+                frequency=request.frequency,
+                days=request.days,
+            ))
+
+        @app.get("/api/data/info")
+        async def get_data_info(symbol: Optional[str] = None):
+            return result_to_response(self.get_data_info(symbol=symbol))
+
+        return app
+
 
 __all__ = ["ApplicationRunner"]
